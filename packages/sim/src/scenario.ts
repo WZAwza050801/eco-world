@@ -1,16 +1,15 @@
 /**
  * 场景加载与世界生成（契约 §13：sim/src/scenario.ts）。
  *
- * 地形生成方案（2026-11-16 用户指定，契约未冻结地形算法，见问题单 Q5）：
- *  - Perlin 梯度噪声 + fBm 多倍频细节；
- *  - 排列表(permutation)由 RandomStream 派生，同 seed 逐 cell 可复现；
- *  - 「基本款地球形状」：按真实大陆的经纬度分布放置椭圆软窗口掩模
- *    （北美/南美/非洲/欧亚/欧洲/印度/东南亚/澳洲/格陵兰 + 南极大陆），
- *    北极无大陆掩模（对应北冰洋）；
- *  - 经度 lon = 360*(x+0.5)/W；纬度按契约 §1.3：lat = 90 - 180*(y+0.5)/H。
+ * 地形生成方案 v2（2026-11-16 用户指定，问题单 Q5）：
+ *  - 大陆分布 = 真实地球海陆数据（Natural Earth 50m，data/earth/land-mask-128x128.json，
+ *    由 scripts/build-earth-mask.mjs 可复现生成）；随机生成大陆留给未来版本；
+ *  - 海拔细节 = Perlin fBm（排列表由 RandomStream 派生，同 seed 逐 cell 可复现）；
+ *  - 经度 lon = 360*(x+0.5)/W - 180；纬度按契约 §1.3：lat = 90 - 180*(y+0.5)/H。
  *
  * 随机性红线：全部随机数来自注入的 RandomStream（契约 §8.3），禁 Math.random。
  */
+import { readFileSync } from 'node:fs';
 import type { Cell, CellId, GeologicalType, TerrainType, BiomeType, WorldSnapshot } from '../../core/src/types.js';
 import { WORLD } from '../../core/src/constants.js';
 import { RandomStream } from '../../core/src/random/RandomStream.js';
@@ -88,97 +87,86 @@ class Perlin {
   }
 }
 
-// ───────────────────────── 地球形状掩模（经纬度） ─────────────────────────
+// ───────────────────────── 真实地球海陆掩模（内容数据） ─────────────────────────
 
-interface ContinentBlob {
-  lonC: number; // 中心经度 deg
-  latC: number; // 中心纬度 deg
-  rLon: number; // 经向半径 deg
-  rLat: number; // 纬向半径 deg
-  weight: number;
+interface LandMask {
+  data: number[];
+  W: number;
+  H: number;
 }
 
-/** 真实大陆的简化椭圆近似（equirectangular，经度环绕处理） */
-const EARTH_CONTINENTS: readonly ContinentBlob[] = [
-  { lonC: -100, latC: 45, rLon: 32, rLat: 22, weight: 1.0 }, // 北美
-  { lonC: -60, latC: -15, rLon: 12, rLat: 26, weight: 1.0 }, // 南美
-  { lonC: 18, latC: 5, rLon: 26, rLat: 30, weight: 1.0 }, // 非洲
-  { lonC: 70, latC: 45, rLon: 58, rLat: 24, weight: 1.0 }, // 欧亚主体
-  { lonC: 15, latC: 50, rLon: 22, rLat: 12, weight: 0.9 }, // 欧洲
-  { lonC: 78, latC: 20, rLon: 9, rLat: 9, weight: 0.85 }, // 印度次大陆
-  { lonC: 115, latC: 0, rLon: 14, rLat: 7, weight: 0.75 }, // 东南亚
-  { lonC: 134, latC: -25, rLon: 13, rLat: 8, weight: 0.95 }, // 澳洲
-  { lonC: -42, latC: 73, rLon: 10, rLat: 7, weight: 0.9 }, // 格陵兰
-];
+let cachedMask: LandMask | null = null;
 
-/** 经度差（处理 -180/180 环绕） */
-function lonDelta(a: number, b: number): number {
-  let d = a - b;
-  while (d > 180) d -= 360;
-  while (d < -180) d += 360;
-  return d;
+function loadLandMask(): LandMask {
+  if (cachedMask) return cachedMask;
+  const raw = JSON.parse(
+    readFileSync(new URL('../../../data/earth/land-mask-128x128.json', import.meta.url), 'utf8'),
+  ) as { meta: { width: number; height: number }; landFraction: number[] };
+  cachedMask = { data: raw.landFraction, W: raw.meta.width, H: raw.meta.height };
+  return cachedMask;
 }
 
-/** 大陆性掩模 ∈ [0,1]：真实大陆位置的高斯软窗口 + 南极大陆极地盖 */
-export function continentMask(lon: number, lat: number): number {
-  let m = 0;
-  for (const c of EARTH_CONTINENTS) {
-    const dx = lonDelta(lon, c.lonC) / c.rLon;
-    const dy = (lat - c.latC) / c.rLat;
-    m = Math.max(m, c.weight * Math.exp(-(dx * dx + dy * dy)));
-  }
-  if (lat < -55) {
-    // 南极大陆：lat ≤ -67 处全权重
-    const t = Math.min(1, (-55 - lat) / 12);
-    m = Math.max(m, t);
-  }
-  return Math.min(1, m);
+/** 查询真实地球某经纬度的陆地分数 ∈ [0,1]（掩模为 lon/lat 栅格，任意世界尺寸按最近邻采样） */
+export function landFractionAt(lon: number, lat: number): number {
+  const m = loadLandMask();
+  let l = lon;
+  if (l >= 180) l -= 360;
+  if (l < -180) l += 360;
+  const x = Math.min(m.W - 1, Math.max(0, Math.floor(((l + 180) / 360) * m.W)));
+  const y = Math.min(m.H - 1, Math.max(0, Math.floor(((90 - lat) / 180) * m.H)));
+  return m.data[y * m.W + x] as number;
 }
 
 // ───────────────────────── 地形生成 ─────────────────────────
+
+const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
 
 export interface TerrainOptions {
   seed: number; // 根种子
   width?: number; // 默认 WORLD.W
   height?: number; // 默认 WORLD.H
-  /** fBm 基础频率（cell 单位）；越小大陆越平缓 */
+  /** fBm 基础频率（cell 单位）；越小陆地起伏越平缓 */
   noiseScale?: number;
-  /** 海平面偏置；越大海越多 */
-  seaBias?: number;
 }
 
 const TERRAIN_TAG = 'sim:scenario:terrain';
 
-/** 生成地形 Cell[]：Perlin fBm × 地球大陆掩模 → 海拔/坡度/坡向/地表类型/海岸距离 */
+/** 生成地形 Cell[]：真实地球海陆掩模 + Perlin fBm 起伏 → 海拔/坡度/坡向/地表类型/海岸距离 */
 export function generateTerrainCells(opts: TerrainOptions): Cell[] {
   const W = opts.width ?? WORLD.W;
   const H = opts.height ?? WORLD.H;
   const scale = opts.noiseScale ?? 0.045;
-  const seaBias = opts.seaBias ?? 0.26;
 
   const root = new RandomStream(opts.seed);
   const perlin = new Perlin(root.fork(`${TERRAIN_TAG}:perlin`));
   const mountain = new Perlin(root.fork(`${TERRAIN_TAG}:mountain`));
   const geology = root.fork(`${TERRAIN_TAG}:geology`);
 
-  // 1) 海拔场
+  // 1) 海拔场：真实海陆掩模定海陆，Perlin fBm 做陆地起伏与海底
   const elev = new Float64Array(W * H);
+  const landFrac = new Float64Array(W * H);
   for (let y = 0; y < H; y++) {
     const lat = 90 - (180 * (y + 0.5)) / H;
     for (let x = 0; x < W; x++) {
-      const lon = (360 * (x + 0.5)) / W;
-      const mask = continentMask(lon, lat);
-      const detail = perlin.fbm(x * scale, y * scale, 6) * 0.5 + 0.5; // 0..1
-      const ridge = mountain.fbm(x * scale * 1.7 + 37.3, y * scale * 1.7 - 11.7, 4) * 0.5 + 0.5; // 山脉带 0..1
-      // 组合：大陆内部成陆，边缘碎化；陆地上叠加山脉带
-      let v = mask * (0.62 + 0.28 * detail) + 0.08 * detail - seaBias;
-      if (v > 0) {
-        // 起伏度因子：山脉带(fbm ridge)抬升，其余压为平原/丘陵
-        const relief = 0.25 + ridge;
-        elev[y * W + x] = Math.pow(v, 2.4) * 5000 * relief; // m
+      const lon = (360 * (x + 0.5)) / W - 180;
+      const lwm = landFractionAt(lon, lat); // 真实陆地分数 0..1
+      landFrac[y * W + x] = lwm;
+      const detail = clamp01(perlin.fbm(x * scale, y * scale, 6) * 0.9 + 0.5); // 0..1（拉伸动态范围）
+      const ridge = clamp01(mountain.fbm(x * scale * 1.7 + 37.3, y * scale * 1.7 - 11.7, 4) * 0.9 + 0.5); // 山脉带 0..1
+      let e: number;
+      if (lwm >= 0.5) {
+        // 陆地：幂曲线 + 山脉带起伏度（平原为主，山成条状）
+        const relief = 0.25 + 0.75 * ridge;
+        e = 30 + Math.pow(detail, 1.9) * 3000 * relief;
+      } else if (lwm >= 0.25) {
+        // 海岸过渡带：浅滩
+        e = (lwm - 0.5) * 160;
       } else {
-        elev[y * W + x] = v * 22000; // 海深（mask=0 处约 -1600 ~ -3700 m）
+        // 海洋：离岸越远越深 + 噪声
+        const offshore = (0.25 - lwm) / 0.25; // (0,1]
+        e = -(60 + 3400 * Math.pow(offshore, 0.7) * (0.35 + 0.65 * detail));
       }
+      elev[y * W + x] = e;
     }
   }
 
@@ -206,8 +194,8 @@ export function generateTerrainCells(opts: TerrainOptions): Cell[] {
         ? 0
         : ((Math.atan2(-dzdx, dzdy) + 2 * Math.PI) % (2 * Math.PI)); // rad
 
-      // 海陆分数：海拔 -60..+60 m 间平滑过渡
-      const lwf = e <= -60 ? 1 : e >= 60 ? 0 : (60 - e) / 120;
+      // 海陆分数：直接取真实掩模的陆地分数（海岸带自带中间值）
+      const lwf = 1 - (landFrac[i] as number);
 
       const terrainType = classifyTerrain(e, slope);
       const geologicalType = classifyGeology(terrainType, slope, geology);
@@ -279,7 +267,7 @@ function fourNeighbors(x: number, y: number, W: number, H: number): CellId[] {
 function classifyTerrain(elevation: number, slope: number): TerrainType {
   if (elevation < 0) return 'ocean';
   if (elevation > 1100 || (elevation > 700 && slope > 0.35)) return 'mountain';
-  if (elevation > 350 || slope > 0.3) return 'hill';
+  if (elevation > 500 || slope > 0.3) return 'hill';
   if (elevation < 80 && slope < 0.08) return 'wetland';
   return 'plain';
   // TODO(M1 后半): lake/river 由 E4 流向矩阵派生

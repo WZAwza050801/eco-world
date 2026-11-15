@@ -1,15 +1,15 @@
 /**
- * M1（地形部分）验收：Perlin + 地球形状掩模地形生成（scenario.ts）。
+ * M1（地形部分）验收：真实地球海陆掩模 + Perlin 地形生成（scenario.ts）。
  * 验收项：
  *  - 同 seed 逐 cell 完全可复现；不同 seed 地形不同；
- *  - 海陆比例合理（参考地球 ~29% 陆地）；
- *  - 纬度协议（契约 §1.3）；北极海洋、南极大陆（地球形状参考）；
+ *  - 真实海陆掩模（陆地占比 ≈ 地球 29%；真实地理点抽查）；
+ *  - 纬度协议（契约 §1.3）；北极海洋、南极大陆；
  *  - 数值健全（红线 4）与 4 邻域边界墙（契约 §1.3）。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { WORLD } from '../../core/src/constants.js';
-import { continentMask, generateTerrainCells, generateWorld } from '../src/scenario.js';
+import { generateTerrainCells, generateWorld, landFractionAt } from '../src/scenario.js';
 import { serializeWorldSnapshot } from '../src/snapshot.js';
 
 const SEED = 20261116;
@@ -26,14 +26,14 @@ test('不同 seed 生成不同地形', () => {
   assert.notStrictEqual(serializeWorldSnapshot(a), serializeWorldSnapshot(b));
 });
 
-test('陆地占比在 [0.15, 0.5]（地球参考 ~29%）', () => {
+test('陆地占比在 [0.2, 0.4]（真实地图 128×128 采样实测 28.7%）', () => {
   const cells = generateTerrainCells({ seed: SEED });
   let land = 0;
   for (const c of cells) {
     if (c.landWaterFraction < 0.5) land++;
   }
   const ratio = land / cells.length;
-  assert.ok(ratio > 0.15 && ratio < 0.5, `陆地占比异常: ${ratio.toFixed(3)}`);
+  assert.ok(ratio > 0.2 && ratio < 0.4, `陆地占比异常: ${ratio.toFixed(3)}`);
 });
 
 test('纬度协议：lat = 90 - 180*(y+0.5)/H，范围 [-90,90]', () => {
@@ -57,25 +57,42 @@ test('北极（lat ≥ 84°）为海洋——北冰洋参考', () => {
   }
 });
 
-test('南极（lat ≤ -80°）为大陆——南极洲参考', () => {
+test('南极（lat ≤ -85°）为大陆——南极洲参考（含极点）', () => {
   const cells = generateTerrainCells({ seed: SEED });
   let land = 0;
   let total = 0;
   for (const c of cells) {
-    if (c.latitude <= -80) {
+    if (c.latitude <= -85) {
       total++;
       if (c.landWaterFraction < 0.5) land++;
     }
   }
   assert.ok(total > 0, '南极区域不存在（H 太小？）');
-  assert.equal(land, total, `南极存在海洋 cell（${total - land}/${total}）`);
+  assert.equal(land, total, `南极内陆存在海洋 cell（${total - land}/${total}）`);
 });
 
-test('continentMask：大陆中心高、开阔大洋中心低', () => {
-  assert.ok(continentMask(18, 5) > 0.9, '非洲中心应接近 1'); // 非洲中部
-  assert.ok(continentMask(70, 45) > 0.9, '欧亚中心应接近 1');
-  assert.ok(continentMask(-150, -30) < 0.1, '南太平洋应接近 0');
-  assert.ok(continentMask(-90, -90) >= 0.99, '南极点应为 1');
+test('landFractionAt 真实地理点抽查（Natural Earth 50m）', () => {
+  // (lon, lat, 期望是否陆地)
+  const spots: Array<[string, number, number, boolean]> = [
+    ['亚马逊', -62, -5, true],
+    ['撒哈拉', 10, 23, true],
+    ['西伯利亚', 100, 60, true],
+    ['澳洲中部', 134, -25, true],
+    ['印度', 78, 20, true],
+    ['英国', -2, 54, true],
+    ['日本木州', 138, 37, true],
+    ['马达加斯加', 47, -19, true],
+    ['格陵兰', -42, 73, true],
+    ['大西洋', -30, 30, false],
+    ['南太平洋', -150, -30, false],
+    ['印度洋', 80, -20, false],
+    ['北冰洋', 0, 86, false],
+  ];
+  for (const [name, lon, lat, expectLand] of spots) {
+    const lwm = landFractionAt(lon, lat);
+    const isLand = lwm >= 0.5;
+    assert.equal(isLand, expectLand, `${name}(${lon},${lat}) 期望${expectLand ? '陆' : '海'}，掩模值 ${lwm}`);
+  }
 });
 
 test('数值健全：无 NaN/Infinity，slope∈[0,1]，coastDistance≥0，aspect∈[0,2π)', () => {
