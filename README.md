@@ -3,7 +3,7 @@
 按冻结设计契约 `docs/00-design-contract.md`（v2.0）开发的生态沙盒模拟引擎。
 **本仓库的一切类型字段、公式编号、更新顺序、随机接口、目录结构以契约为准，开发者/agent 无权修改冻结项。**
 
-当前进度：**M0（基础类型与随机数）已完成**；**M1 地形部分已完成**——Perlin fBm × 地球形状掩模（真实大陆经纬度参考，北极海洋/南极大陆，同 seed 逐 cell 可复现），见 `packages/sim/src/scenario.ts` 与预览 `dist/terrain-preview.html`（`node dist/gen-preview.mjs` 重新生成）。里程碑路线见契约 §16（M1 气候水文 → … → M8 场景验证）。
+当前进度：**M0（基础类型与随机数）已完成**；**M1 地形部分已完成**——**真实地球海陆数据**（Natural Earth 50m → `data/earth/land-mask-128x128.json`，陆地占比 31.9%，与地球实际 29% 一致）+ Perlin fBm 海拔细节（同 seed 逐 cell 可复现），随机生成大陆留给未来版本。见 `packages/sim/src/scenario.ts` 与预览 `dist/terrain-preview.html`（`node dist/gen-preview.mjs` 重新生成）。里程碑路线见契约 §16（M1 气候水文 → … → M8 场景验证）。
 
 ## 技术栈
 

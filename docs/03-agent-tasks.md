@@ -24,10 +24,23 @@
 - **位置**：§4 公式引用了未在 §2 定义/赋值的常量：`SOLAR_AMPLITUDE_DAY`、`SEASON_AMP`（E1/E2）、`INFILTRATION_CAPACITY`、`EVAP_RATE`、`MAX_SURFACE_WATER`（E4）、`MAX_NUTRIENTS`（E5）。
 - **最小修改建议**：契约 v2.1 在 §2 常量表补充上述数值（冻结），M1 开工前完成。
 
-### Q5（M1 · 算法未指定 · 已按用户指示解决）
+### Q5（M1 · 算法未指定 · 已按用户指示解决，v2）
 - **位置**：契约 §16 M1 要求"地形"生成，但 §4–§7 无地形生成公式，§13 文件树亦无 terrain 模块。
-- **处理**：2026-11-16 用户指定方案——Perlin 梯度噪声（fBm 多倍频）+ 地球形状参考（真实大陆经纬度椭圆掩模，北极无掩模对应北冰洋，南极极地盖）。实现于 `packages/sim/src/scenario.ts`（场景初始化职责），随机性全部经 RandomStream 派生（`sim:scenario:terrain:*` fork tag），未新增目录树外顶层结构。
-- **最小修改建议**：契约 v2.1 增补 §3.7「地形生成器」小节，冻结掩模大陆表与海拔映射参数；或明确地形算法为可改项。
+- **处理 v2（2026-11-16 用户升级指示）**：大陆分布改为**真实地球海陆数据**——Natural Earth 50m（world-atlas TopoJSON），经 `scripts/build-earth-mask.mjs` 转为 128×128 陆地分数栅格（`data/earth/land-mask-128x128.json`，每 cell 3×3 超采样）。随机生成大陆留给未来版本。海拔细节仍为 Perlin fBm（RandomStream 派生，可复现）。实现于 `packages/sim/src/scenario.ts`。
+- **已知数据修正**：Natural Earth 南极洲 = 主海岸环（最深约 -84°）+ 沿 -90° 退化极帽环，南极内陆（lat < -84°）按地理事实直接判陆（南极点高原）。
+- **最小修改建议**：契约 v2.1 增补 §3.7「地形生成器」：冻结掩模数据源、经度协议（lon = 360*(x+0.5)/W - 180）与海拔映射参数。
+
+### Q6（M1 · 架构变更提案候选 · 未决）
+- **议题**：用户提出"空间单位是否六边形更合适"。六边形 6 邻居等距等向（扩散各向同性、无对角线歧义）确实优于 4 邻域方形；但 §1.3 坐标协议（方形网格/4 邻域/纬度公式/边界墙）为冻结项，且：
+  1. 真实地球数据为 equirectangular 矩形栅格，映射六边形需重采样，高纬环带挤压问题需专门处理；
+  2. E4 水流（邻居高差）、B9 扩散、§9.2 全管线均按 4 邻域书写；
+  3. M2 垂直切片铁律在前，切换网格拓扑将推迟闭环验证。
+- **当前建议**：保持方形网格至 M2 闭环通过；将本条留作 v2.1 架构变更提案候选。若 M3/M8 扩散各向异性产生可观测偏差，届时在有全量测试保护下一次性切换（axial 坐标 + 数据重采样）。缓解措施：契约 §1.3 已含 8 邻域展示平滑；扩散可后续引入对角 0.5 权重近似各向同性。
+- **决策人**：项目 owner（用户）。
+
+### Q7（M1 · 树外脚本 · 低风险）
+- **位置**：`scripts/build-earth-mask.mjs` 为 §13 冻结树外新增（真实地球数据管线：TopoJSON → 海陆栅格）。
+- **最小修改建议**：契约 v2.1 在 §13 scripts/ 下追认数据构建脚本。
 
 ## 任务卡（M0 已完成）
 
@@ -39,7 +52,7 @@
 
 ## 任务卡（M1 进行中）
 
-- [x] M1-0 地形生成：Perlin + fBm + 地球大陆掩模 → elevation/slope/aspect/terrainType/landWaterFraction/coastDistance/latitude/neighbors（`sim/src/scenario.ts`，方案见 Q5）
+- [x] M1-0 地形生成 v2：真实地球海陆掩模（Natural Earth 50m，陆地占比 31.9%）+ Perlin fBm 海拔细节（`sim/src/scenario.ts`，方案见 Q5/Q7）
 - [ ] M1-1 E1 太阳辐射（`climate/solar.ts`）——阻塞于 Q4 常量
 - [ ] M1-2 E2 温度（`climate/temperature.ts`）——阻塞于 Q4 常量
 - [ ] M1-3 E3 降水（`climate/precipitation.ts`，含雨影 RAIN_SHADOW_FACTOR）
