@@ -24,6 +24,11 @@
 - **位置**：§4 公式引用了未在 §2 定义/赋值的常量：`SOLAR_AMPLITUDE_DAY`、`SEASON_AMP`（E1/E2）、`INFILTRATION_CAPACITY`、`EVAP_RATE`、`MAX_SURFACE_WATER`（E4）、`MAX_NUTRIENTS`（E5）。
 - **最小修改建议**：契约 v2.1 在 §2 常量表补充上述数值（冻结），M1 开工前完成。
 
+### Q5（M1 · 算法未指定 · 已按用户指示解决）
+- **位置**：契约 §16 M1 要求"地形"生成，但 §4–§7 无地形生成公式，§13 文件树亦无 terrain 模块。
+- **处理**：2026-11-16 用户指定方案——Perlin 梯度噪声（fBm 多倍频）+ 地球形状参考（真实大陆经纬度椭圆掩模，北极无掩模对应北冰洋，南极极地盖）。实现于 `packages/sim/src/scenario.ts`（场景初始化职责），随机性全部经 RandomStream 派生（`sim:scenario:terrain:*` fork tag），未新增目录树外顶层结构。
+- **最小修改建议**：契约 v2.1 增补 §3.7「地形生成器」小节，冻结掩模大陆表与海拔映射参数；或明确地形算法为可改项。
+
 ## 任务卡（M0 已完成）
 
 - [x] M0-1 实现 `packages/core/src/types.ts`（§3 + §8.4）
@@ -31,3 +36,13 @@
 - [x] M0-3 实现 `packages/core/src/random/RandomStream.ts`（§14.1/§8.3）
 - [x] M0-4 实现 `packages/sim/src/snapshot.ts`
 - [x] M0-5 测试 `packages/core/test/random.test.ts`、`packages/sim/test/snapshot.test.ts`
+
+## 任务卡（M1 进行中）
+
+- [x] M1-0 地形生成：Perlin + fBm + 地球大陆掩模 → elevation/slope/aspect/terrainType/landWaterFraction/coastDistance/latitude/neighbors（`sim/src/scenario.ts`，方案见 Q5）
+- [ ] M1-1 E1 太阳辐射（`climate/solar.ts`）——阻塞于 Q4 常量
+- [ ] M1-2 E2 温度（`climate/temperature.ts`）——阻塞于 Q4 常量
+- [ ] M1-3 E3 降水（`climate/precipitation.ts`，含雨影 RAIN_SHADOW_FACTOR）
+- [ ] M1-4 E4 水文与 `computeFlowDirection`（`hydrology/waterBalance.ts`、`grid/flowDirection.ts`）
+- [ ] M1-5 E5 营养（`soil/nutrients.ts`）
+- [ ] M1-6 E6 群系查表（`climate/biome.ts` + `content/biomes/biome-rules.json`）
