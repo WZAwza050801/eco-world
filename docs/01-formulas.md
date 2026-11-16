@@ -4,12 +4,12 @@
 
 | 编号 | 名称 | 实现文件 | 函数 | 里程碑 |
 |---|---|---|---|---|
-| E1 | 太阳辐射 | packages/core/src/climate/solar.ts | - | M1 |
-| E2 | 温度 | packages/core/src/climate/temperature.ts | - | M1 |
-| E3 | 降水 | packages/core/src/climate/precipitation.ts | - | M1 |
-| E4 | 水量平衡 | packages/core/src/hydrology/waterBalance.ts、packages/core/src/grid/flowDirection.ts | computeFlowDirection | M1 |
-| E5 | 土壤与营养 | packages/core/src/soil/nutrients.ts | - | M1 |
-| E6 | 生物群系 | packages/core/src/climate/biome.ts | - | M1 |
+| E1 | 太阳辐射 | packages/core/src/climate/solar.ts | solarInput、seasonPhase | M1 ✅ |
+| E2 | 温度 | packages/core/src/climate/temperature.ts | temperature | M1 ✅ |
+| E3 | 降水 | packages/core/src/climate/precipitation.ts | precipitation、prevailingWind、moistureSource、transportFactor、orographicLift、seasonalFactor、stormNoiseFactor、relativeHumidity | M1 ✅ |
+| E4 | 水量平衡 | packages/core/src/hydrology/waterBalance.ts、packages/core/src/grid/flowDirection.ts | waterBalance、stepHydrology、computeFlowDirection | M1 ✅ |
+| E5 | 土壤与营养 | packages/core/src/soil/nutrients.ts | stepNutrients | M1 ✅ |
+| E6 | 生物群系 | packages/core/src/climate/biome.ts（规则表 packages/content/biomes/biome-rules.json） | classifyBiome | M1 ✅ |
 | B1 | 光合作用 | packages/core/src/biology/photosynthesis.ts | grossPrimaryProduction | M2 |
 | B2 | 呼吸损耗 | packages/core/src/biology/photosynthesis.ts | respiration | M2 |
 | B3 | 植物生长 | packages/core/src/biology/photosynthesis.ts | plantGrowth | M2 |

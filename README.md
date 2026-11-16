@@ -1,9 +1,14 @@
 # ECO WORLD 生态世界盒子
 
-按冻结设计契约 `docs/00-design-contract.md`（v2.0）开发的生态沙盒模拟引擎。
+按冻结设计契约 `docs/00-design-contract.md`（v2.1）开发的生态沙盒模拟引擎。
 **本仓库的一切类型字段、公式编号、更新顺序、随机接口、目录结构以契约为准，开发者/agent 无权修改冻结项。**
 
-当前进度：**M0（基础类型与随机数）已完成**；**M1 地形部分已完成**——**真实地球海陆数据**（Natural Earth 50m → `data/earth/land-mask-128x128.json`，陆地占比 31.9%，与地球实际 29% 一致）+ Perlin fBm 海拔细节（同 seed 逐 cell 可复现），随机生成大陆留给未来版本。见 `packages/sim/src/scenario.ts` 与预览 `dist/terrain-preview.html`（`node dist/gen-preview.mjs` 重新生成）。里程碑路线见契约 §16（M1 气候水文 → … → M8 场景验证）。
+当前进度：**M0（基础类型与随机数）已完成**；**M1（地形 + 气候水文）已完成**——
+- 地形：**真实地球海陆数据**（Natural Earth 50m → `data/earth/land-mask-128x128.json`，陆地占比 31.9%，与地球实际 29% 一致）+ Perlin fBm 海拔细节（同 seed 逐 cell 可复现），随机生成大陆留给未来版本；
+- 气候水文：**E1–E6 全部实现**（太阳辐射/温度/降水含雨影/水量平衡含流向缓存与质量守恒汇流/土壤营养/群系查表），场景气候平均态初始化（`scenario.initializeClimate`）与 §9.2 步骤 2–4（`scheduler.stepEnvironment`）已接线；
+- 契约升级 **v2.1**（2026-11-16 owner 批准）：Q4 六个缺失常量冻结；Q6 决策保持方形网格至 M2 闭环。
+
+见 `packages/sim/src/scenario.ts`、`packages/sim/src/scheduler.ts` 与 `packages/core/src/climate|hydrology|soil|grid`。里程碑路线见契约 §16，**下一步 M2 垂直切片（B1–B7 植物-草食-捕食闭环）**。
 
 ## 技术栈
 
@@ -29,9 +34,9 @@ npm test
 
 | 命令 | 说明 | 状态 |
 |---|---|---|
-| `npm test` | 编译 + 全量单元测试 | ✅ M0 可用 |
-| `npm run build` | 仅编译 TypeScript → `dist/` | ✅ M0 可用 |
-| `node scripts/run-scenario.mjs data/scenarios/<x>.json` | 无头跑场景 | ⏳ M1+（依赖 stepWorld） |
+| `npm test` | 编译 + 全量单元测试 | ✅ M0/M1 可用 |
+| `npm run build` | 仅编译 TypeScript → `dist/` | ✅ M0/M1 可用 |
+| `node scripts/run-scenario.mjs data/scenarios/<x>.json` | 无头跑场景 | ⏳ M2+（依赖 stepWorld） |
 | `node scripts/replay.mjs <存档>` | 重放存档（同种子逐 tick 一致） | ⏳ M6 |
 | `node scripts/validate-content.mjs` | 校验 content JSON | ⏳ M8 |
 
@@ -41,6 +46,17 @@ npm test
 2. `fork("a")` 与 `fork("b")` 产生不同但可复现的序列；
 3. `serialize()` 后反序列化（`RandomStream.fromSerialized`），继续 `next()` 与原流结果一致；
 4. `WorldSnapshot` 序列化再反序列化，所有字段值不变（且拒绝 NaN/Infinity）。
+
+## M1 验收标准（契约 §16，全部通过；`npm test` 61 项：58 通过 / 0 失败 / 3 跳过）
+
+1. **山脉两侧降水差异**：迎风坡抬升 > 1、背风坡折扣趋近 `RAIN_SHADOW_FACTOR=0.5`（西风带 slope 0.6 样例比值 ≈ 2.71）；
+2. **水流向低处**：`computeFlowDirection` 最陡下降（海洋/洼地为汇 −1）；超量地表水单 tick 转移至下游；饱和链式汇流严格质量守恒；
+3. **不产生非法值**：温度 [−70,70] 截断并标记、降水 [0,60]、水量/营养非负且有界（全球扫描）；
+4. **可复现**：同 seed 地形+气候逐字节一致；`stepEnvironment` 单/多 tick 重放一致；双缓冲不修改输入；
+5. **地理抽查**：撒哈拉→desert、亚马逊→森林、南极→tundra、南太平洋→ocean（真实地球掩模 + E1–E6）。
+
+测试位置：`packages/core/test/climate.test.ts`、`water.test.ts`、`packages/sim/test/scenario.test.ts`。
+已知规范观察见问题单 Q8（E2 纬向形状偏冷，非阻塞，M8 前由 owner 决策）。
 
 ## 仓库结构
 

@@ -1,1 +1,23 @@
-[]
+{
+  "meta": {
+    "version": "1.0.0",
+    "milestone": "M1-6",
+    "contract": "docs/00-design-contract.md §4 E6（分类表冻结于本文件，只做查表）",
+    "semantics": "规则按序首条命中生效（first-match-wins）；数值条件为闭区间；terrainType 精确匹配；末条兜底保证全覆盖",
+    "note": "阈值适配冻结 E2 公式产生的风格化气候（纬向 |sin(lat)| 梯度偏冷，见问题单 Q8）；若 v2.1 后调整 E2，本表需随之重调（M8）"
+  },
+  "rules": [
+    { "biome": "deep_ocean", "when": { "landWaterFraction": { "min": 0.5 }, "elevation": { "max": -2000 } } },
+    { "biome": "coastal_ocean", "when": { "landWaterFraction": { "min": 0.5 } } },
+    { "biome": "freshwater", "when": { "terrainType": "river" } },
+    { "biome": "freshwater", "when": { "terrainType": "lake" } },
+    { "biome": "wetland", "when": { "terrainType": "wetland" } },
+    { "biome": "wetland", "when": { "soilMoisture": { "min": 180 }, "elevation": { "max": 100 } } },
+    { "biome": "tundra", "when": { "temperature": { "max": -8 } } },
+    { "biome": "desert", "when": { "precipitation": { "max": 0.7 } } },
+    { "biome": "tropical_forest", "when": { "temperature": { "min": 8 }, "precipitation": { "min": 3 } } },
+    { "biome": "seasonal_forest", "when": { "temperature": { "min": 4 }, "precipitation": { "min": 2 }, "seasonality": { "min": 0.35 } } },
+    { "biome": "temperate_forest", "when": { "precipitation": { "min": 2 } } },
+    { "biome": "grassland", "when": {} }
+  ]
+}

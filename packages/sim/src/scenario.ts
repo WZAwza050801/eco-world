@@ -7,12 +7,20 @@
  *  - 海拔细节 = Perlin fBm（排列表由 RandomStream 派生，同 seed 逐 cell 可复现）；
  *  - 经度 lon = 360*(x+0.5)/W - 180；纬度按契约 §1.3：lat = 90 - 180*(y+0.5)/H。
  *
+ * M1 气候水文（E1–E6）：generateWorld 经 initializeClimate 完成气候初始化
+ * （E2 温度/E3 降水/湿度/E6 群系查表 + 初始水氮库）；tick 级动态更新由
+ * scheduler.stepEnvironment（§9.2 步骤 2–4）执行。
+ *
  * 随机性红线：全部随机数来自注入的 RandomStream（契约 §8.3），禁 Math.random。
  */
 import { readFileSync } from 'node:fs';
 import type { Cell, CellId, GeologicalType, TerrainType, BiomeType, WorldSnapshot } from '../../core/src/types.js';
-import { WORLD } from '../../core/src/constants.js';
+import { HYDROLOGY, WORLD } from '../../core/src/constants.js';
 import { RandomStream } from '../../core/src/random/RandomStream.js';
+import { temperature } from '../../core/src/climate/temperature.js';
+import { precipitation, relativeHumidity } from '../../core/src/climate/precipitation.js';
+import { classifyBiome, type BiomeRule } from '../../core/src/climate/biome.js';
+import { FIELD_CAPACITY_MM } from '../../core/src/hydrology/waterBalance.js';
 import { createWorldSnapshot } from './snapshot.js';
 
 // ───────────────────────── Perlin 噪声（2D） ─────────────────────────
@@ -117,6 +125,82 @@ export function landFractionAt(lon: number, lat: number): number {
   return m.data[y * m.W + x] as number;
 }
 
+// ───────────────────────── E6 群系规则表（内容数据） ─────────────────────────
+
+let cachedBiomeRules: BiomeRule[] | null = null;
+
+/** 加载 E6 分类表（契约 §4 E6：冻结于 content/biomes/biome-rules.json，core 零 I/O，由 sim 加载） */
+export function loadBiomeRules(): BiomeRule[] {
+  if (cachedBiomeRules) return cachedBiomeRules;
+  const raw = JSON.parse(
+    readFileSync(new URL('../../../packages/content/biomes/biome-rules.json', import.meta.url), 'utf8'),
+  ) as { rules: BiomeRule[] };
+  cachedBiomeRules = raw.rules;
+  return cachedBiomeRules;
+}
+
+// ───────────────────────── 气候初始化（M1，E2/E3/E6） ─────────────────────────
+
+/** @non-frozen 初始条件（M1，M8 可调）：陆地营养/有机质库 kgN、kgC /cell */
+const INITIAL_NUTRIENTS_KGN = 100;
+const INITIAL_ORGANIC_MATTER_KGC = 100;
+const INITIAL_OCEAN_NUTRIENTS_KGN = 50;
+
+/**
+ * M1 气候初始化（§9.2 步骤 2–3 的气候部分 + E6 派生缓存）：
+ * E2 温度、E3 降水、湿度诊断、初始水/营养库（@non-frozen）、E6 群系查表。
+ * 初始态为**确定性气候平均态**（weatherNoise = 0、stormNoise = 1）；
+ * 天气/风暴噪声与 E4/E5 动态更新自 tick 1 起由 scheduler.stepEnvironment 注入。
+ * §9.3 双缓冲：读 cells、返回新数组，不修改输入。
+ */
+export function initializeClimate(cells: Cell[], day: number): Cell[] {
+  const rules = loadBiomeRules();
+  return cells.map((c) => {
+    const t = temperature({
+      latitude: c.latitude,
+      elevation: c.elevation,
+      landWaterFraction: c.landWaterFraction,
+      day,
+    });
+    const p = precipitation({
+      latitude: c.latitude,
+      coastDistance: c.coastDistance,
+      slope: c.slope,
+      aspect: c.aspect,
+      day,
+    });
+    const ocean = c.elevation < 0;
+    const soilMoisture = ocean ? 0 : Math.min(FIELD_CAPACITY_MM, 20 + 30 * p);
+    const humidity = relativeHumidity(p, soilMoisture, c.landWaterFraction);
+    const biome = classifyBiome(
+      {
+        temperature: t.value,
+        precipitation: p,
+        seasonality: Math.abs(Math.sin((c.latitude * Math.PI) / 180)),
+        soilMoisture,
+        elevation: c.elevation,
+        salinity: c.salinity,
+        landWaterFraction: c.landWaterFraction,
+        terrainType: c.terrainType,
+        vegetationStructure: 0, // M1 无植被（M2+ 接线）
+      },
+      rules,
+    );
+    return {
+      ...c,
+      temperature: t.value,
+      precipitation: p,
+      humidity,
+      soilMoisture,
+      surfaceWater: ocean ? HYDROLOGY.MAX_SURFACE_WATER : 0,
+      groundwater: 0,
+      nutrients: ocean ? INITIAL_OCEAN_NUTRIENTS_KGN : INITIAL_NUTRIENTS_KGN,
+      organicMatter: ocean ? 0 : INITIAL_ORGANIC_MATTER_KGC,
+      biome,
+    };
+  });
+}
+
 // ───────────────────────── 地形生成 ─────────────────────────
 
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -199,7 +283,8 @@ export function generateTerrainCells(opts: TerrainOptions): Cell[] {
 
       const terrainType = classifyTerrain(e, slope);
       const geologicalType = classifyGeology(terrainType, slope, geology);
-      const biome: BiomeType = e < 0 ? (e < -2000 ? 'deep_ocean' : 'coastal_ocean') : 'grassland'; // TODO(M1): E6 查表替换
+      // 占位值：generateWorld 会经 initializeClimate（E6 查表）覆盖
+      const biome: BiomeType = e < 0 ? (e < -2000 ? 'deep_ocean' : 'coastal_ocean') : 'grassland';
 
       cells[i] = {
         id: { x, y },
@@ -212,7 +297,8 @@ export function generateTerrainCells(opts: TerrainOptions): Cell[] {
         coastDistance: 0,
         latitude: lat,
         neighbors: fourNeighbors(x, y, W, H),
-        // 动态环境场：中性初值，待 §9.2 步骤 2-4（E1-E5）在 M1 填充
+        // 动态环境场：中性初值，由 initializeClimate（M1，E2/E3/E6）覆盖；
+        // E4/E5 动态更新自 tick 1 起由 scheduler.stepEnvironment 执行
         temperature: 0,
         precipitation: 0,
         humidity: 0.5,
@@ -239,15 +325,16 @@ export function generateTerrainCells(opts: TerrainOptions): Cell[] {
   return cells;
 }
 
-/** 生成完整初始世界快照（time=0, season=0，随机流状态入库） */
+/** 生成完整初始世界快照（time=0, season=0，地形 + M1 气候平均态初始化，随机流状态入库） */
 export function generateWorld(opts: TerrainOptions): WorldSnapshot {
   const root = new RandomStream(opts.seed);
   const cells = generateTerrainCells(opts);
-  // 快照的 randomState = 尚未消耗的根流状态（重放起点）
+  const initialized = initializeClimate(cells, 0);
+  // 快照的 randomState = 根流初始状态（地形/气候初始化均为确定性派生；重放起点，契约 §10.5）
   return createWorldSnapshot({
     time: 0,
     season: 0,
-    cells,
+    cells: initialized,
     randomState: root.serialize(),
   });
 }
@@ -270,7 +357,7 @@ function classifyTerrain(elevation: number, slope: number): TerrainType {
   if (elevation > 500 || slope > 0.3) return 'hill';
   if (elevation < 80 && slope < 0.08) return 'wetland';
   return 'plain';
-  // TODO(M1 后半): lake/river 由 E4 流向矩阵派生
+  // TODO(后续里程碑): lake/river 地形类型由 E4 汇流累积派生（M1 不改地形）
 }
 
 function classifyGeology(
