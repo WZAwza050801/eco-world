@@ -1,7 +1,12 @@
-# ECO WORLD 项目执行契约 v2.0
+# ECO WORLD 项目执行契约 v2.1
 
 > 本文档是 v1「总设计文档」的落地版本。v1 决定“做什么、为什么”，本文档决定“怎么做、按什么顺序做、谁来做、做完怎么验收”。
 > 本文档是**执行契约**：其中所有公式、单位、数据结构、更新顺序和文件树均为**冻结项**，后续 agent 不得自行修改；只能按 §17 的任务模板补数据、补函数体、补测试。
+
+> **v2.1 变更记录（2026-11-16，项目 owner 批准）**：
+> - **Q4 解决**：§2 补充 E1–E5 引用的 6 个常量（`SOLAR_AMPLITUDE_DAY` / `SEASON_AMP` / `INFILTRATION_CAPACITY` / `EVAP_RATE` / `MAX_SURFACE_WATER` / `MAX_NUTRIENTS`），冻结；新增 `HYDROLOGY` / `SOIL` 常量组。
+> - **Q6 决策**：保持方形网格 / 4 邻域（§1.3）至 M2 闭环验收通过；六边形网格留作后续架构变更提案候选。
+> - Q5 / Q7 的 v2.1 增补提案（§3.7 地形生成器、§13 数据构建脚本追认）仍待决，不在本次变更内。
 
 ---
 
@@ -97,6 +102,18 @@ export const CLIMATE = {
   OCEAN_MODERATION: 0.6,      // 海洋削弱季节振幅的比例
   RAIN_SHADOW_FACTOR: 0.5,    // 背风坡降水折扣
   MAX_PRECIP_MM_DAY: 60,      // 单日降水上限
+  SOLAR_AMPLITUDE_DAY: 0.65,  // E1 辐射季节振幅（无量纲；赤道输出≈[0.35,1.65]）【v2.1/Q4】
+  SEASON_AMP: 15,             // E2 季节温度振幅 °C（海洋按 OCEAN_MODERATION 削弱）【v2.1/Q4】
+};
+
+export const HYDROLOGY = {    // 【v2.1/Q4 新增常量组】
+  INFILTRATION_CAPACITY: 20,  // E4 日入渗上限 mm/day
+  EVAP_RATE: 2,               // E4 蒸发基准 mm/day（20°C、湿度0.5 → 3 mm/day）
+  MAX_SURFACE_WATER: 1000,    // E4 地表水深上限 mm，超出转 downstreamFlow
+};
+
+export const SOIL = {         // 【v2.1/Q4 新增常量组】
+  MAX_NUTRIENTS: 1000,        // E5 有效氮库上限 kgN/cell
 };
 
 export const BIOLOGY = {
@@ -108,6 +125,7 @@ export const BIOLOGY = {
 ```
 
 > 这些默认值被公式引用。内容 agent 录入物种时只能覆盖物种级参数，不能覆盖全局常量。
+> 【v2.1/Q4】标注的 6 个常量于 2026-11-16 经项目 owner 批准冻结（问题单 Q4 最小修改提案原文见 `docs/03-agent-tasks.md`）。
 
 ---
 
