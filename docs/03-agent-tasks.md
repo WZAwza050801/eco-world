@@ -19,6 +19,7 @@
 - **位置**：§14.1 骨架中 `serialize(): string` 有序列化，但 §8.3 冻结接口无反序列化方法；测试验收要求“serialize 后反序列化继续 next() 与原流一致”。
 - **当前处理**：在 `RandomStream` 上增加静态方法 `static fromSerialized(s: string): RandomStream`（`parseInt(s, 16)` 恢复 state）。未改动 §8.3 冻结的 5 个实例方法签名。
 - **最小修改建议**：契约 §8.3 接口注释中明确“反序列化通过静态构造方法由实现方扩展”。
+- **M2 修复（2026-11-16）**：state 为 int32（Mulberry32 `|0`），消耗后可为负 → 冻结骨架 `serialize()` 输出负十六进制（如 `-6fc5fb46`），原 `fromSerialized` 拒绝负值导致重放入口崩溃（M2 跑场景时暴露）。修复在 Q3 扩展内：接受 [−2³¹, 2³²−1] 解析值，构造器 `>>>0` 恢复位模式；`serialize()` 冻结骨架未动。回归测试：60 种子×30 次消耗往返逐位一致（覆盖负 state 路径）。
 
 ### Q4（M0 · 常量缺失 · 已解决 2026-11-16）
 - **位置**：§4 公式引用了未在 §2 定义/赋值的常量：`SOLAR_AMPLITUDE_DAY`、`SEASON_AMP`（E1/E2）、`INFILTRATION_CAPACITY`、`EVAP_RATE`、`MAX_SURFACE_WATER`（E4）、`MAX_NUTRIENTS`（E5）。
@@ -51,6 +52,19 @@
 - **最小修改建议（供 v2.1/M8 决策）**：E2 纬向形状改 `sin²(rad(lat))` 并调整 `BASE_MEAN_TEMP`/`SOLAR_AMPLITUDE`（示例 24/44：赤道 24、23°≈17、45°≈2、60°≈−9、极地 −20）；变更后需重调 `biome-rules.json` 与 E3 水源基准。若采纳，走架构变更提案。
 - **决策人**：项目 owner（用户）；建议在 M2 闭环后、M8 调参前决策。
 
+### Q9（M2 · 接口/公式不对称 · 非阻塞 · 已按 Q3 先例以非冻结扩展实现）
+- **位置与处理**（全部不改冻结签名/字段，可选扩展显式标 `@non-frozen`，待 v2.2 冻结）：
+  1. §14.2 `PhotoInput` 缺 B1 公式引用的物种参数（最适温/高斯宽度/半饱和常数）→ 增可选字段 `tempOptimum/tempTolerance/kWater/kNutrient`，缺省常量在 `photosynthesis.ts`；
+  2. §14.2 `respiration(gpp, biomass, maintenanceRate)` 缺 B2 的 growthRespiration → 增可选第 4 参 `growthFraction`（缺省 0.25）；
+  3. §5 B5 的 `randomMortality` 不在 §14.3 `modifiers` 字段中 → 增可选 `modifiers.randomMortality`（缺省 1）；`energyReserve/health` 为因果携带量，修正项以 modifiers 为准，推导 helper（`starvationModifier`/`climateStressModifier`/`densityModifier`）导出供调度器/测试调用；
+  4. B3 的 herbivory/droughtDamage/competitionLoss 公式未指定 → herbivory 实现为饱和采食 functional response（`predation.ts`，prey 以 kgC 计，避开 B6 ind 单位冲突）；干旱/自疏在 scheduler 内 @non-frozen 实现；
+  5. 狼 `movement.pattern='territorial'`（§15.3）→ 领域性捕食干扰：有效攻击率 a/(1+0.5·捕食者密度)，仅缩放 B6 输入，公式本体不变（均质生境持续共存的关键稳定机制）；
+  6. `Physiology` 增可选 `reserveMaxDays`（K 策略者耐饿更久，狼 25 天/缺省 15 天）；`ResourceProfile` 增可选 `kWater/kNutrient/energyDensity/conversionEfficiency`；
+  7. `foodweb-edges.json` 边 schema 契约未冻结 → @non-frozen：carnivory 边 attackRate/handlingTime/preference；herbivory 边 halfSaturationKgC；
+  8. 繁殖率/基础死亡率契约无显式公式 → 由 lifeHistory/physiology 推导：reproRate = 平均窝仔数×juvenileSurvival/(繁殖间隔×365)，baselineMortality = 1/(maximumAge×365)；环境容纳量 @non-frozen（草食=植物能量/需求×30 天窗口，肉食=猎物×0.15）。
+- **最小修改建议**：契约 v2.2 冻结上述可选字段与推导公式（或给出替代定义）；§14.2/§14.3 骨架同步增补。
+- **决策人**：项目 owner（用户）；不阻塞 M3+（扩展均向后兼容）。
+
 ## 任务卡（M0 已完成）
 
 - [x] M0-1 实现 `packages/core/src/types.ts`（§3 + §8.4）
@@ -78,3 +92,26 @@
 5. 地理抽查 ✓（撒哈拉 desert / 亚马逊森林 / 南极 tundra / 南太平洋 ocean；群系多样性覆盖沙漠/苔原/草原/森林/海洋）。
 
 **下一步：M2 垂直切片（B1–B7 植物-草食-捕食闭环）**——铁律：M2 未通过验收前不展开 M4–M5。待办问题单：Q1/Q2（类型冻结）、Q5/Q7（v2.1 追认提案）、Q8（E2 气候形状，M8 前决策）。
+
+## 任务卡（M2 已完成 2026-11-16）
+
+- [x] M2-1 B1–B3 光合/呼吸/植物生长（`biology/photosynthesis.ts`，冻结签名；因子 helper 导出；Q9 可选扩展）
+- [x] M2-2 B4–B5 出生/死亡（`biology/population.ts`：`stepPopulation` + `densityModifier`/`starvationModifier`/`climateStressModifier` helper；饥饿指数 M2 整定 exp(3) 上限 20×，种群可撑过资源低谷）
+- [x] M2-3 B6 捕食（`biology/predation.ts`：`holling2` 冻结签名 + `predationEnergyGain` + `herbivory`（B3 项，kgC 饱和采食，日采食上限 0.35 防啃绝））
+- [x] M2-4 B7 竞争（`biology/competition.ts`：`effectiveResource`，接入草食者共享植物资源）
+- [x] M2-5 内容填写（§15 范例 → `grass_c3/rabbit/wolf.json` + `foodweb-edges.json`；物种数值可改项；狼→兔边 a=0.014/h=0.3，兔→草 K=100kgC；deer/oak/fungus/virus/homo 仍为空占位，**铁律：M3–M5 再填**）
+- [x] M2-6 调度接线（`scheduler.stepWorld`：§9.2 步骤 1–7/9/12 实现，8/10/11 显式占位保序（M4/M5/M6）；流向 WeakMap 缓存传递；领域性捕食干扰（Q9-5）；年龄结构轻量动态；尸体/凋落物→有机质路由；`scenario.loadSpeciesDefinitions/loadFoodwebEdges/seedPopulations`）
+- [x] M2-7 无头场景（`scripts/run-scenario.mjs` 实现 + `data/scenarios/grass_rabbit_wolf.json`：6×6 均匀适生平原，草 1500/兔 120/狼 2 每 cell；overrides/all:true 为 @non-frozen 场景便利）
+- [x] M2-8 测试与整定（`population.test.ts`/`predation.test.ts` 替换占位 + 新增 `sim/test/scheduler.test.ts` 系统验收；RandomStream 负 state 重放修复（Q3）+ 回归测试）
+
+**M2 验收（契约 §16，`npm test` 87 项：86 通过 / 0 失败 / 1 跳过（M7 占位））**：
+1. **草-兔-狼振荡 ✓**：1500 tick 系统测试断言兔峰早于狼峰（相位延迟）、兔峰后草下降 >20%、狼峰后回落 >20%、≥2 个显著兔峰（持续振荡非单次崩溃）、终态三物种共存；脚本长跑 4000 tick（≈11 年）三物种持续共存，狼收敛至 14–33 区间振荡；
+2. **无负数量 ✓**：每 tick 全量断言 count/biomass/储备/年龄结构/环境场边界（§18.1）；
+3. **移除捕食者 → 兔暴增（>2×）→ 草崩溃（<20%）✓**（§15.6）；
+4. **干旱 → 草↓兔↓狼↓ 营养级联 ✓**（§15.6）；
+5. **捕食者无猎物不增长 ✓ / 植物缺水不无限增长 ✓ / 能量不足降低存活繁殖 ✓**（§18.1）；
+6. **同种子重放逐字节一致 + 双缓冲不改输入 ✓**（§10.5/§9.3）。
+
+**整定记录（全部可改项/@non-frozen，M8 复调）**：狼→兔 a 0.008→0.014、h 0.05→0.3；兔→草 K 300→100；采食上限系数 3→2.2、日采食比例 0.6→0.35；饥饿指数 6→3（上限 400→20）；狼 juvenileSurvival 0.5→0.7（§15.3 parentalCare 高）、reserveMaxDays 25；领域干扰系数 0.5。整定路径：狼先灭绝→兔草崩溃→引入领域干扰+温和饥饿→持续振荡→狼生活史整定→4000 tick 稳定极限环。
+
+**下一步：M3（B8 适合度、B9 迁徙扩散、遗传性状）**——验收：物种只在适生区定居。待决问题单：Q1/Q2（类型冻结）、Q5/Q7（v2.1 追认）、Q8（E2 气候形状）、Q9（v2.2 接口冻结）。
