@@ -1,10 +1,17 @@
 /**
- * 调度器（契约 §14.7 冻结签名；§9.2 冻结更新顺序）。
- * M1：实现步骤 2–4（stepEnvironment：气候/水文/土壤，E1–E6）。
- * M2 起逐步填充其余步骤，M6 完成全部 12 步（stepWorld）。
+ * 调度器（契约 §14.7 冻结签名；§9.2 冻结更新顺序，不可改变）。
+ * M1：步骤 2–4（stepEnvironment：气候/水文/土壤，E1–E6）。
+ * M2：stepWorld 填充步骤 1–7、9、12（B1–B7 植物-草食-捕食闭环）；
+ *     步骤 8（疾病 M4）、10（智人 M5）、11（事件因果 M6）为显式占位，位置保留。
+ *
+ * §9.3 双缓冲解释：不修改 prev 快照对象；管线内下游步骤读上游步骤产出的
+ * 新状态（与 M1 stepEnvironment 内部链一致），最后统一 commit 为新快照。
+ * §8.3 随机：所有噪声/微观随机取自 rng 的稳定 fork，按固定顺序消费，重放一致。
  */
-import type { Cell, WorldSnapshot } from '../../core/src/types.js';
+import type { Cell, PopulationState, SpeciesDefinition, WorldSnapshot } from '../../core/src/types.js';
 import type { RandomStream } from '../../core/src/random/RandomStream.js';
+import { BIOLOGY, WORLD } from '../../core/src/constants.js';
+import { solarInput } from '../../core/src/climate/solar.js';
 import {
   temperature,
   WEATHER_NOISE_SIGMA_C,
@@ -15,21 +22,100 @@ import {
   stormNoiseFactor,
 } from '../../core/src/climate/precipitation.js';
 import { classifyBiome } from '../../core/src/climate/biome.js';
+import { computeFlowDirection } from '../../core/src/grid/flowDirection.js';
 import { stepHydrology } from '../../core/src/hydrology/waterBalance.js';
 import { stepNutrients } from '../../core/src/soil/nutrients.js';
-import { loadBiomeRules } from './scenario.js';
+import {
+  grossPrimaryProduction,
+  plantGrowth,
+  respiration,
+} from '../../core/src/biology/photosynthesis.js';
+import {
+  CARBON_FRACTION,
+  climateStressModifier,
+  densityModifier,
+  RESERVE_MAX_DAYS,
+  starvationModifier,
+  stepPopulation,
+} from '../../core/src/biology/population.js';
+import { herbivory, holling2 } from '../../core/src/biology/predation.js';
+import { effectiveResource } from '../../core/src/biology/competition.js';
+import {
+  loadBiomeRules,
+  loadFoodwebEdges,
+  loadSpeciesDefinitions,
+  type FoodwebEdge,
+} from './scenario.js';
+import { createWorldSnapshot } from './snapshot.js';
 
 const rad = (deg: number): number => (deg * Math.PI) / 180;
+const clamp = (x: number, lo: number, hi: number): number =>
+  x < lo ? lo : x > hi ? hi : x;
+const clamp01 = (x: number): number => clamp(x, 0, 1);
+
+// ───────────────── @non-frozen M2 实现常量（Q9，M8 可调） ─────────────────
+
+/** 草食者最大日采食 = 能量需求/植物能量密度 × 本系数 */
+const INTAKE_CAP_FACTOR = 2.2;
+/** 草食同化效率（摄入→可用能量） */
+const ASSIMILATION_HERB = 0.5;
+/** 肉食同化效率 */
+const ASSIMILATION_CARN = 0.8;
+/** 植物净生长吸氮比例 kgN/kgC */
+const PLANT_N_UPTAKE_RATIO = 0.02;
+/** 植物 standing crop 日周转 → 凋落物比例 1/day */
+const PLANT_TURNOVER_RATE = 0.005;
+/** 损失/尸体 → 死亡有机质比例 */
+const DETRITUS_FRACTION = 0.9;
+/** 萎蔫点 mm（低于则干旱损伤） */
+const WILT_POINT_MM = 10;
+/** 干旱损伤速率 1/day */
+const DROUGHT_DAMAGE_RATE = 0.02;
+/** 自疏（拥挤）损失速率 1/day，超过 maxBiomass×CROWDING_ONSET 触发 */
+const CROWDING_RATE = 0.01;
+const CROWDING_ONSET = 0.8;
+/** 配偶可得性 Allee 半饱和 ind（B4 mateAvailability，@non-frozen） */
+const MATE_ALLEE_K = 1;
+/** 草食者环境容纳量窗口天数：CC = 植物能量/(日需求×天数) */
+const CC_WINDOW_DAYS = 30;
+/** 捕食者环境容纳量 = 猎物数量 × 比例 */
+const PREDATOR_PREY_RATIO = 0.15;
+/** 繁殖季节修正下限（B4 seasonalModifier = base + (1−base)·seasonFactor） */
+const SEASONAL_BASE = 0.3;
+/** B5 randomMortality 对数正态 σ（微观随机，§8.1） */
+const MICRO_MORTALITY_SIGMA = 0.1;
+/**
+ * 领域性捕食者干扰系数（@non-frozen Q9）：movement.pattern='territorial' 的
+ * 捕食者有效攻击率 a/(1+系数·捕食者密度)——领域行为限制高密度下的过度捕食，
+ * 是均质生境中捕食者-猎物持续共存的关键稳定机制（B6 公式本体不变，仅缩放输入）。
+ */
+const TERRITORIAL_INTERFERENCE = 0.5;
+/** 植物缺省维持呼吸 1/day（content 未给时） */
+const DEFAULT_MAINTENANCE_RESPIRATION = 0.01;
+/** 动物能量密度缺省 kJ/kg 体重 */
+const DEFAULT_ANIMAL_ENERGY_DENSITY = 7000;
+/** 植物能量密度缺省 kJ/kgC */
+const DEFAULT_PLANT_ENERGY_DENSITY = 17000;
+
+// ───────────────── 流向缓存（契约 E4：不逐 tick 重算） ─────────────────
+
+const flowCache = new WeakMap<Cell[], Int32Array>();
+
+function flowFor(cells: Cell[]): Int32Array {
+  let f = flowCache.get(cells);
+  if (!f) {
+    f = computeFlowDirection(cells);
+    flowCache.set(cells, f);
+  }
+  return f;
+}
+
+// ───────────────── §9.2 步骤 2–4（M1） ─────────────────
 
 /**
- * §9.2 步骤 2–4（M1）：太阳/季节/天气 → 温度/降水/水文 → 土壤/营养。
- * E1 太阳辐射由 climate/solar.ts 独立提供（M2 接线 B1 光合）；此处接线 E2–E6。
- * biome 为派生缓存（§3.1），随环境场更新（E6 查表）。
- *
- * §9.3 双缓冲：读 cells（上一快照状态）、返回新数组，不修改输入。
- * §8.3 随机：天气/风暴噪声取自 rng.fork('core:climate:weather'|'core:climate:storm')，
- * 按 cell 索引顺序消费，保证重放一致。
- * flow 为 computeFlowDirection 缓存（契约 E4：不逐 tick 重算），由调用方持有。
+ * 步骤 2–4：太阳/季节/天气 → 温度/降水/水文 → 土壤/营养（E2–E6）。
+ * E1 由 solarInput 独立提供（stepWorld 步骤 5 光合使用）。
+ * flow 为 computeFlowDirection 缓存，由调用方持有。
  */
 export function stepEnvironment(
   cells: Cell[],
@@ -92,7 +178,7 @@ export function stepEnvironment(
         salinity: c.salinity,
         landWaterFraction: c.landWaterFraction,
         terrainType: c.terrainType,
-        vegetationStructure: 0, // M1 无植被（M2+ 接线）
+        vegetationStructure: 0, // M2 植被结构仍未接线（M3+）
       },
       rules,
     );
@@ -100,25 +186,347 @@ export function stepEnvironment(
   });
 }
 
-/** §9.2 冻结更新顺序（不可改变）：
- *  1. 读时间与随机种子
- *  2. 太阳、季节、天气
- *  3. 温度、降水、水文
- *  4. 土壤、营养、污染
- *  5. 植物与真菌
- *  6. 食物资源与分解
- *  7. 动物能量、捕食、竞争
- *  8. 疾病与寄生网络
- *  9. 繁殖、死亡、遗传、迁徙
- * 10. 人类聚落与土地利用
- * 11. 生成事件与因果记录
- * 12. 统计、缓存、前端快照
- *
- * M1 已实现步骤 2–4（stepEnvironment）；步骤 5–12 待 M2–M6。
+// ───────────────── §9.2 全管线（M2 垂直切片） ─────────────────
+
+const popKey = (p: PopulationState): string => `${p.speciesId}@${p.cellId.x},${p.cellId.y}`;
+
+interface AnimalWork {
+  intakePerInd: number; // kJ/(ind·day)
+  reserveNext: number; // kJ/ind
+  foodMod: number; // 0..1
+  healthNext: number; // 0..1
+}
+
+/**
+ * §14.7 冻结签名；§9.2 冻结更新顺序（12 步，顺序不可变）。
+ * M2 实现：1–7、9、12；8/10/11 为显式占位（M4/M5/M6），位置保留。
+ * 每 cell 每物种至多一个种群（M2 约定，seedPopulations 强制）。
  */
 export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot {
-  // §9.3 双缓冲：读 prev（旧快照）、写 next（新快照）、统一提交。
-  void prev;
-  void rng;
-  throw new Error('TODO(M2+): §9.2 更新顺序未实现（12 步，顺序不可变）');
+  const species = loadSpeciesDefinitions();
+  const edges = loadFoodwebEdges();
+
+  // ── 步骤 1：读时间与随机种子（rng 由调用方注入；randomState 于步骤 12 提交） ──
+  const timeNext = prev.time + WORLD.TICKS_PER_DAY;
+  const day = timeNext % WORLD.DAYS_PER_YEAR;
+  const seasonNext = day / WORLD.DAYS_PER_YEAR;
+  let W = 0;
+  for (const c of prev.cells) W = Math.max(W, c.id.x + 1);
+  const idx = (x: number, y: number): number => y * W + x;
+
+  // ── 步骤 2–4：太阳/季节/天气 → 温度/降水/水文 → 土壤/营养 ──
+  const flow = flowFor(prev.cells);
+  const cells = stepEnvironment(prev.cells, flow, day, rng); // 全新中间对象，可安全写
+  for (const c of cells) c.productivity = 0;
+
+  const defOf = (p: PopulationState): SpeciesDefinition | undefined => species.get(p.speciesId);
+  const plants = prev.populations.filter((p) => defOf(p)?.simulationTier === 'field');
+  const animals = prev.populations.filter((p) => defOf(p)?.simulationTier === 'population');
+  const animalsByCell = new Map<number, PopulationState[]>();
+  for (const p of animals) {
+    const i = idx(p.cellId.x, p.cellId.y);
+    const list = animalsByCell.get(i) ?? [];
+    list.push(p);
+    animalsByCell.set(i, list);
+  }
+
+  const nextPops: PopulationState[] = [];
+  const herbIntakeKJ = new Map<string, number>(); // grazerKey -> kJ/day（种群总量）
+  const consumedRecords: Array<{ preyKey: string; predatorKey: string; amount: number }> = [];
+
+  // ── 步骤 5：植物与真菌（真菌 M4；B1–B3 + B3 herbivory 项 + B7 竞争） ──
+  for (const p of plants) {
+    const def = defOf(p);
+    if (!def) { nextPops.push(p); continue; }
+    const i = idx(p.cellId.x, p.cellId.y);
+    const c = cells[i] as Cell;
+    const solar = solarInput(c.latitude, day);
+    const seasonFactor = clamp01((solar - 0.35) / 1.3); // @non-frozen：E1 → 0..1 物候
+    const maxB = def.physiology.maxBiomass ?? 0;
+    const gpp = grossPrimaryProduction({
+      solar,
+      temperature: c.temperature,
+      soilMoisture: c.soilMoisture,
+      nutrients: c.nutrients,
+      pMax: def.physiology.pMax ?? 0,
+      efficiency: def.roles.producer,
+      seasonFactor,
+      tempOptimum: def.physiology.tempOptimum,
+      tempTolerance: def.physiology.tempTolerance,
+      kWater: def.resources.kWater,
+      kNutrient: def.resources.kNutrient,
+    });
+    const resp = respiration(
+      gpp,
+      p.biomass,
+      def.physiology.maintenanceRespiration ?? DEFAULT_MAINTENANCE_RESPIRATION,
+      def.physiology.growthRespiration,
+    );
+
+    // herbivory（B3 损失项）：按食物网边，采食者读 prev 数量（双缓冲）
+    let herbLoss = 0;
+    for (const e of edges) {
+      if (e.prey !== p.speciesId || e.type !== 'herbivory') continue;
+      const grazer = (animalsByCell.get(i) ?? []).find((q) => q.speciesId === e.predator);
+      const gDef = grazer ? defOf(grazer) : undefined;
+      if (!grazer || !gDef || grazer.count <= 0) continue;
+      // B7：其他共享该植物的草食者按竞争系数折减有效资源
+      const competitors = (animalsByCell.get(i) ?? [])
+        .filter((q) => q.speciesId !== grazer.speciesId && q.count > 0 &&
+          edges.some((e2) => e2.predator === q.speciesId && e2.prey === p.speciesId && e2.type === 'herbivory'))
+        .map((q) => ({
+          coefficient: gDef.interactions.competitionCoefficients[q.speciesId] ?? 0,
+          density: q.count,
+        }));
+      const avail = effectiveResource(p.biomass, competitors);
+      const plantEnergy = def.resources.energyDensity ?? DEFAULT_PLANT_ENERGY_DENSITY;
+      const maxIntake = (gDef.resources.minimumDailyEnergy / plantEnergy) * INTAKE_CAP_FACTOR;
+      const eaten = herbivory(avail, grazer.count, maxIntake, e.halfSaturationKgC ?? 300);
+      herbLoss += eaten;
+      const key = popKey(grazer);
+      herbIntakeKJ.set(key, (herbIntakeKJ.get(key) ?? 0) + eaten * plantEnergy);
+    }
+
+    const drought = c.soilMoisture < WILT_POINT_MM
+      ? p.biomass * DROUGHT_DAMAGE_RATE * (1 - c.soilMoisture / WILT_POINT_MM)
+      : 0;
+    const crowding = maxB > 0 && p.biomass > CROWDING_ONSET * maxB
+      ? p.biomass * CROWDING_RATE * ((p.biomass / maxB - CROWDING_ONSET) / (1 - CROWDING_ONSET))
+      : 0;
+    const turnover = p.biomass * PLANT_TURNOVER_RATE;
+    const losses = herbLoss + drought + crowding; // diseaseLoss/fireLoss：M4/M7 接线
+    const biomassNext = plantGrowth(p.biomass, gpp, resp, losses, maxB);
+
+    // 吸氮（E5 plantUptake，步骤 4 之后按双缓冲滞后 applied）与凋落物（步骤 6 路由）
+    const uptake = Math.max(0, gpp - resp) * PLANT_N_UPTAKE_RATIO;
+    c.nutrients = Math.max(0, c.nutrients - uptake);
+    c.organicMatter += (drought + crowding + turnover) * DETRITUS_FRACTION
+      + herbLoss * (1 - ASSIMILATION_HERB);
+    c.productivity += gpp - resp; // 净初级生产力缓存 kgC/(cell·day)
+
+    nextPops.push({ ...p, count: 0, biomass: biomassNext });
+  }
+
+  // ── 步骤 6：食物资源与分解 ──
+  // 分解已在步骤 4（E5）执行；本步的凋落物/尸体路由在步骤 5/9 写入 organicMatter，
+  // 于步骤 12 统一提交（双缓冲滞后一拍，M2 约定）。
+
+  // ── 步骤 7：动物能量、捕食、竞争 ──
+  // 7a 捕食量（B6，全部读 prev 数量）
+  for (const p of animals) {
+    const def = defOf(p);
+    if (!def || p.count <= 0) continue;
+    const i = idx(p.cellId.x, p.cellId.y);
+    for (const e of edges) {
+      if (e.predator !== p.speciesId || e.type !== 'carnivory') continue;
+      const prey = (animalsByCell.get(i) ?? []).find((q) => q.speciesId === e.prey);
+      const preyDef = prey ? defOf(prey) : undefined;
+      if (!prey || !preyDef || prey.count <= 0) continue;
+      const baseAttack = e.attackRate ?? BIOLOGY.ATTACK_RATE_DEFAULT;
+      const attack = def.movement.pattern === 'territorial'
+        ? baseAttack / (1 + TERRITORIAL_INTERFERENCE * p.count)
+        : baseAttack;
+      const amount = holling2(
+        attack,
+        e.handlingTime ?? BIOLOGY.HANDLING_TIME_DEFAULT,
+        p.count,
+        prey.count,
+      ) * clamp01(e.preference ?? 1);
+      if (amount > 0) consumedRecords.push({ preyKey: popKey(prey), predatorKey: popKey(p), amount });
+    }
+  }
+  // 7b 共享猎物总量截断 ≤ 猎物数量（多捕食者按比例缩放）
+  const consumedTotal = new Map<string, number>();
+  for (const r of consumedRecords) {
+    consumedTotal.set(r.preyKey, (consumedTotal.get(r.preyKey) ?? 0) + r.amount);
+  }
+  const preyPrevCount = new Map<string, number>();
+  for (const p of animals) preyPrevCount.set(popKey(p), p.count);
+  const consumedByPrey = new Map<string, number>();
+  for (const r of consumedRecords) {
+    const total = consumedTotal.get(r.preyKey) ?? 0;
+    const cap = preyPrevCount.get(r.preyKey) ?? 0;
+    const scaled = total > cap ? r.amount * (cap / total) : r.amount;
+    consumedByPrey.set(r.preyKey, (consumedByPrey.get(r.preyKey) ?? 0) + scaled);
+  }
+  // 7c 能量收支（每头）：摄入 − 需求 → 储备；food/health 修正项
+  const work = new Map<string, AnimalWork>();
+  for (const p of animals) {
+    const def = defOf(p);
+    if (!def) continue;
+    const key = popKey(p);
+    const need = def.resources.minimumDailyEnergy;
+    let intakeTotal = herbIntakeKJ.get(key) ?? 0;
+    for (const r of consumedRecords) {
+      if (r.predatorKey !== key) continue;
+      const total = consumedTotal.get(r.preyKey) ?? 0;
+      const cap = preyPrevCount.get(r.preyKey) ?? 0;
+      const scaled = total > cap ? r.amount * (cap / total) : r.amount;
+      const preyDef = species.get(r.preyKey.split('@')[0] as string);
+      const energyPerInd = preyDef
+        ? preyDef.physiology.bodyMass * (preyDef.resources.energyDensity ?? DEFAULT_ANIMAL_ENERGY_DENSITY)
+        : 0;
+      intakeTotal += scaled * energyPerInd * ASSIMILATION_CARN;
+    }
+    const intakePerInd = p.count > 0 ? intakeTotal / p.count : 0;
+    const reserveDays = def.physiology.reserveMaxDays ?? RESERVE_MAX_DAYS;
+    const reserveNext = clamp(
+      p.energyReserve + intakePerInd - need,
+      0,
+      Math.max(0, need * reserveDays),
+    );
+    const foodMod = need > 0 ? clamp01(intakePerInd / need) : 1;
+    work.set(key, {
+      intakePerInd,
+      reserveNext,
+      foodMod,
+      healthNext: clamp01(0.5 + 0.5 * foodMod),
+    });
+  }
+
+  // ── 步骤 8：疾病与寄生网络（M4 占位，位置保留；infectionState 原样携带） ──
+
+  // ── 步骤 9：繁殖、死亡、遗传、迁徙（遗传/迁徙 M3；B4+B5） ──
+  const mortality = rng.fork('sim:scheduler:mortality');
+  const plantBiomassNext = new Map<string, number>();
+  for (const p of nextPops) {
+    if (defOf(p)?.simulationTier === 'field') plantBiomassNext.set(popKey(p), p.biomass);
+  }
+  const animalBase = new Map<string, number>(); // 捕食移除后的基数
+  for (const p of animals) {
+    const key = popKey(p);
+    animalBase.set(key, Math.max(0, p.count - (consumedByPrey.get(key) ?? 0)));
+  }
+  for (const p of animals) {
+    const def = defOf(p);
+    const key = popKey(p);
+    const w = work.get(key);
+    if (!def || !w) { nextPops.push(p); continue; }
+    const i = idx(p.cellId.x, p.cellId.y);
+    const c = cells[i] as Cell;
+    const base = animalBase.get(key) ?? 0;
+
+    // 环境容纳量（派生缓存 @non-frozen：草食=植物能量窗口，肉食=猎物比例）
+    let cc = 0;
+    for (const foodId of def.resources.foodSources) {
+      const foodDef = species.get(foodId);
+      if (!foodDef) continue;
+      if (foodDef.simulationTier === 'field') {
+        const b = plantBiomassNext.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0;
+        const energy = foodDef.resources.energyDensity ?? DEFAULT_PLANT_ENERGY_DENSITY;
+        cc += (b * energy) / (Math.max(1, def.resources.minimumDailyEnergy) * CC_WINDOW_DAYS);
+      } else {
+        cc += (animalBase.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0) * PREDATOR_PREY_RATIO;
+      }
+    }
+
+    const solar = solarInput(c.latitude, day);
+    const seasonFactor = clamp01((solar - 0.35) / 1.3);
+    const lh = def.lifeHistory;
+    const offspringMean = (lh.offspringPerEvent.min + lh.offspringPerEvent.max) / 2;
+    const reproductionRate =
+      (offspringMean * lh.juvenileSurvival) / (Math.max(1e-6, lh.reproductiveIntervalYears) * WORLD.DAYS_PER_YEAR);
+    const baselineMortality = 1 / (Math.max(1e-6, def.physiology.maximumAge) * WORLD.DAYS_PER_YEAR);
+    const sigma = MICRO_MORTALITY_SIGMA;
+    const randomMortality = Math.exp(sigma * mortality.nextGaussian() - (sigma * sigma) / 2);
+
+    const r = stepPopulation({
+      population: base,
+      adults: base * p.ageStructure.adult,
+      reproductionRate,
+      baselineMortality,
+      carryingCapacity: cc,
+      energyReserve: w.reserveNext,
+      health: w.healthNext,
+      modifiers: {
+        food: w.foodMod,
+        healthMod: w.healthNext,
+        mate: base / (base + MATE_ALLEE_K),
+        seasonal: SEASONAL_BASE + (1 - SEASONAL_BASE) * seasonFactor,
+        density: densityModifier(base, cc),
+        starvation: starvationModifier(
+          w.reserveNext,
+          def.resources.minimumDailyEnergy,
+          def.physiology.reserveMaxDays ?? RESERVE_MAX_DAYS,
+        ),
+        disease: 1, // M4 接线
+        predation: 1, // 捕食移除已直接应用；非消费性恐惧效应 M3+
+        climate: climateStressModifier(c.temperature, def.environment.temperature),
+        randomMortality,
+      },
+    });
+
+    // 年龄结构轻量动态（@non-frozen Q9）：出生入幼体，成熟/老化按生命史速率
+    const maturation = 1 / (Math.max(1e-6, def.physiology.maturityAge) * WORLD.DAYS_PER_YEAR);
+    const aging = 1 / (Math.max(1e-6, def.physiology.maximumAge - def.physiology.maturityAge) * WORLD.DAYS_PER_YEAR);
+    const j0 = base * p.ageStructure.juvenile;
+    const a0 = base * p.ageStructure.adult;
+    const o0 = base * p.ageStructure.old;
+    let j = Math.max(0, j0 - maturation * j0 - r.deaths * p.ageStructure.juvenile + r.births);
+    let a = Math.max(0, a0 + maturation * j0 - aging * a0 - r.deaths * p.ageStructure.adult);
+    let o = Math.max(0, o0 + aging * a0 - r.deaths * p.ageStructure.old);
+    const sum = j + a + o;
+    const ageStructure = sum > 0
+      ? { juvenile: j / sum, adult: a / sum, old: o / sum }
+      : { juvenile: 0.2, adult: 0.7, old: 0.1 };
+
+    // 尸体/粪便 → 死亡有机质（步骤 6 路由，步骤 12 提交）
+    const carcass = r.deaths * def.physiology.bodyMass * CARBON_FRACTION
+      + (consumedByPrey.get(key) ?? 0) * def.physiology.bodyMass * CARBON_FRACTION * (1 - ASSIMILATION_CARN);
+    c.organicMatter += carcass * DETRITUS_FRACTION;
+
+    if (r.population > 0) {
+      nextPops.push({
+        ...p,
+        count: r.population,
+        biomass: r.population * def.physiology.bodyMass * CARBON_FRACTION,
+        ageStructure,
+        energyReserve: w.reserveNext,
+        health: w.healthNext,
+      });
+    }
+    // r.population = 0 → 局部灭绝（再定殖靠 M3 迁徙）
+  }
+
+  // ── 步骤 10：人类聚落与土地利用（M5 占位，位置保留） ──
+  // ── 步骤 11：生成事件与因果记录（M6 占位，位置保留） ──
+  // TODO(M6): 截断/饥饿/灭绝/捕食崩溃等事件与因果链（events.ts）
+
+  // ── 步骤 12：统计、缓存、前端快照 ──
+  for (const c of cells) c.carryingCapacity = {};
+  for (const p of nextPops) {
+    const def = defOf(p);
+    if (!def) continue;
+    const c = cells[idx(p.cellId.x, p.cellId.y)] as Cell;
+    if (def.simulationTier === 'field') {
+      c.carryingCapacity[p.speciesId] = def.physiology.maxBiomass ?? 0;
+      continue;
+    }
+    let cc = 0;
+    for (const foodId of def.resources.foodSources) {
+      const foodDef = species.get(foodId);
+      if (!foodDef) continue;
+      if (foodDef.simulationTier === 'field') {
+        const b = plantBiomassNext.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0;
+        const energy = foodDef.resources.energyDensity ?? DEFAULT_PLANT_ENERGY_DENSITY;
+        cc += (b * energy) / (Math.max(1, def.resources.minimumDailyEnergy) * CC_WINDOW_DAYS);
+      } else {
+        cc += (animalBase.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0) * PREDATOR_PREY_RATIO;
+      }
+    }
+    c.carryingCapacity[p.speciesId] = cc;
+  }
+  // 地形静态（M2）：流向不变，缓存传递给下一快照（地形编辑接线时须失效，M7+）
+  flowCache.set(cells, flow);
+
+  return createWorldSnapshot({
+    time: timeNext,
+    season: seasonNext,
+    cells,
+    populations: nextPops,
+    agents: prev.agents,
+    interactions: prev.interactions,
+    events: prev.events,
+    randomState: rng.serialize(),
+  });
 }

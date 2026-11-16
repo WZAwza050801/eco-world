@@ -1,1 +1,71 @@
-{}
+{
+  "id": "rabbit",
+  "taxonomy": {
+    "domain": "Eukaryota",
+    "kingdom": "Animalia",
+    "phylum": "Chordata",
+    "className": "Mammalia",
+    "order": "Lagomorpha",
+    "family": "Leporidae",
+    "genus": "Oryctolagus",
+    "speciesName": "rabbit",
+    "fictional": false
+  },
+  "roles": {
+    "producer": 0,
+    "herbivore": 0.9,
+    "carnivore": 0,
+    "omnivore": 0.1,
+    "decomposer": 0,
+    "pollinator": 0,
+    "parasite": 0,
+    "pathogen": 0,
+    "ecosystemEngineer": 0.1
+  },
+  "physiology": {
+    "bodyMass": 1.5,
+    "maturityAge": 0.3,
+    "maximumAge": 5,
+    "rStrategyScore": 0.9
+  },
+  "environment": {
+    "temperature": { "min": -10, "max": 35 },
+    "water": { "min": 10, "max": 300 },
+    "biomes": ["grassland", "temperate_forest", "seasonal_forest", "tundra"]
+  },
+  "resources": {
+    "foodSources": ["grass_c3"],
+    "minimumDailyEnergy": 800,
+    "energyDensity": 7000,
+    "conversionEfficiency": 0.5
+  },
+  "lifeHistory": {
+    "reproductionType": "sexual",
+    "offspringPerEvent": { "min": 3, "max": 8 },
+    "reproductiveIntervalYears": 0.1,
+    "juvenileSurvival": 0.3
+  },
+  "movement": {
+    "dispersalMethod": "walking",
+    "speedKmPerDay": 2,
+    "pattern": "diffusive"
+  },
+  "interactions": {
+    "preysOn": ["grass_c3"],
+    "preyedOnBy": ["wolf"],
+    "competitionCoefficients": { "deer": 0.6 }
+  },
+  "genetics": {
+    "heritableTraits": ["bodyMass", "litterSize"],
+    "mutationRate": 0.002
+  },
+  "disease": {
+    "susceptibility": { "virus_rabbit": 0.8 }
+  },
+  "ecosystemEffects": {
+    "soilFixation": 0,
+    "erosionReduction": 0.1,
+    "flammability": 0
+  },
+  "simulationTier": "population"
+}

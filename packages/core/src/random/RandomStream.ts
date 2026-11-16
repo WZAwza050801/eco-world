@@ -62,10 +62,15 @@ export class RandomStream {
   /**
    * 反序列化（问题单 Q3）：契约 §8.3 冻结的 5 个实例方法不含反序列化入口，
    * 此处以静态构造方法扩展，不改动冻结签名。parseInt(s, 16) 恢复 state。
+   *
+   * M2 修复（Q3 扩展内，不动 §14.1 冻结 serialize 骨架）：state 为 int32
+   * （Mulberry32 的 |0 运算），消耗后可为负 → serialize() 输出负十六进制
+   * （如 "-6fc5fb46"）。接受 [-2^31, 2^32-1] 的解析值，构造器 >>>0 恢复位模式，
+   * 保证「serialize → fromSerialized → 继续 next()」逐位一致（M0 验收 3）。
    */
   static fromSerialized(serialized: string): RandomStream {
     const parsed = parseInt(serialized, 16);
-    if (!Number.isInteger(parsed) || parsed < 0) {
+    if (!Number.isInteger(parsed) || parsed < -2147483648 || parsed > 4294967295) {
       throw new RangeError(`fromSerialized: 非法的随机流状态 "${serialized}"`);
     }
     return new RandomStream(parsed);

@@ -1,0 +1,31 @@
+{
+  "meta": {
+    "name": "草-兔-狼垂直切片（M2 验收场景）",
+    "contract": "docs/00-design-contract.md §15.6 / §18.2：初始草充足 → 兔先增、狼后增、草下降、狼回落，相位延迟振荡",
+    "note": "均匀适生生境（纬度 5°、平原、肥沃）隔离气候空间异质性，专验生态闭环；真实地球场景调参留 M8"
+  },
+  "seed": 20261116,
+  "width": 6,
+  "height": 6,
+  "ticks": 1500,
+  "overrides": {
+    "latitude": 5,
+    "elevation": 50,
+    "slope": 0,
+    "aspect": 0,
+    "terrainType": "plain",
+    "landWaterFraction": 0,
+    "coastDistance": 0,
+    "salinity": 0.1,
+    "soilMoisture": 150,
+    "nutrients": 300,
+    "organicMatter": 500,
+    "surfaceWater": 0,
+    "groundwater": 0
+  },
+  "populations": [
+    { "speciesId": "grass_c3", "biomass": 1500, "all": true },
+    { "speciesId": "rabbit", "count": 120, "all": true },
+    { "speciesId": "wolf", "count": 2, "all": true }
+  ]
+}

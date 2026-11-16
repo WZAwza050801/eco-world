@@ -174,12 +174,21 @@ export type GeologicalType = string;
 
 /**
  * @non-frozen 占位（Q1）：按契约 §15.1–15.3 实例推导。
+ * Q9 扩展（M2，可选字段，不改冻结签名）：B1/B2 公式引用但契约接口未给出的
+ * 物种级代谢参数，缺省值见 biology/photosynthesis.ts 的 @non-frozen 常量。
  */
 export interface Physiology {
   bodyMass: number; // kg
   maturityAge: number; // year
   maximumAge: number; // year
   rStrategyScore: number; // 0..1，r/k 策略谱位置
+  pMax?: number; // kgC/(cell·day) 植物最大总初级生产力（B1 P_MAX）
+  maxBiomass?: number; // kgC/cell 植物 standing crop 上限（B3）
+  maintenanceRespiration?: number; // 1/day 维持呼吸占生物量比例（B2）
+  growthRespiration?: number; // 0..1 生长呼吸占盈余 GPP 比例（B2）
+  tempOptimum?: number; // °C 光合/代谢最适温度（B1 高斯峰）
+  tempTolerance?: number; // °C 高斯宽度 σ（B1）
+  reserveMaxDays?: number; // day 能量储备满额天数（K 策略者耐饿更久；缺省 RESERVE_MAX_DAYS）
 }
 
 /**
@@ -193,10 +202,15 @@ export interface EnvironmentPreference {
 
 /**
  * @non-frozen 占位（Q1）：按契约 §15.2–15.3 实例（食物来源、minimumDailyEnergy kJ）推导。
+ * Q9 扩展（M2，可选字段）：B1 半饱和常数与食物网能量换算参数。
  */
 export interface ResourceProfile {
   foodSources: string[]; // speciesId 列表或资源类别
   minimumDailyEnergy: number; // kJ/(ind·day)
+  kWater?: number; // mm 水分半饱和常数（B1 waterFactor）
+  kNutrient?: number; // kgN/cell 营养半饱和常数（B1 nutrientFactor）
+  energyDensity?: number; // kJ/kgC（植物）或 kJ/kg 体重（动物）能量密度
+  conversionEfficiency?: number; // 0..1 摄入→同化的转化效率（B6 energyGain）
 }
 
 /**

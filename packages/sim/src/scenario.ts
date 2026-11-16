@@ -13,14 +13,15 @@
  *
  * 随机性红线：全部随机数来自注入的 RandomStream（契约 §8.3），禁 Math.random。
  */
-import { readFileSync } from 'node:fs';
-import type { Cell, CellId, GeologicalType, TerrainType, BiomeType, WorldSnapshot } from '../../core/src/types.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import type { Cell, CellId, GeologicalType, TerrainType, BiomeType, PopulationState, SpeciesDefinition, WorldSnapshot } from '../../core/src/types.js';
 import { HYDROLOGY, WORLD } from '../../core/src/constants.js';
 import { RandomStream } from '../../core/src/random/RandomStream.js';
 import { temperature } from '../../core/src/climate/temperature.js';
 import { precipitation, relativeHumidity } from '../../core/src/climate/precipitation.js';
 import { classifyBiome, type BiomeRule } from '../../core/src/climate/biome.js';
 import { FIELD_CAPACITY_MM } from '../../core/src/hydrology/waterBalance.js';
+import { CARBON_FRACTION, RESERVE_MAX_DAYS } from '../../core/src/biology/population.js';
 import { createWorldSnapshot } from './snapshot.js';
 
 // ───────────────────────── Perlin 噪声（2D） ─────────────────────────
@@ -137,6 +138,106 @@ export function loadBiomeRules(): BiomeRule[] {
   ) as { rules: BiomeRule[] };
   cachedBiomeRules = raw.rules;
   return cachedBiomeRules;
+}
+
+// ───────────────────────── 物种与食物网（M2 内容加载） ─────────────────────────
+
+/**
+ * 食物网边（@non-frozen schema，Q9；契约 §15.2 捕食系数见 foodweb-edges.json）：
+ * carnivory 边用 attackRate/handlingTime（B6，prey 单位 ind）；
+ * herbivory 边用 halfSaturationKgC（B3 herbivory 项，prey 单位 kgC）。
+ */
+export interface FoodwebEdge {
+  predator: string; // speciesId
+  prey: string; // speciesId
+  type: 'herbivory' | 'carnivory';
+  preference?: number; // 0..1 取食偏好权重
+  attackRate?: number; // 1/(ind·day)，B6
+  handlingTime?: number; // day，B6
+  halfSaturationKgC?: number; // kgC，herbivory 半饱和
+}
+
+let cachedSpecies: Map<string, SpeciesDefinition> | null = null;
+
+/** 加载 content/species/*.json（纯数据）；空 {} 占位（M3–M5 未填物种）跳过 */
+export function loadSpeciesDefinitions(): Map<string, SpeciesDefinition> {
+  if (cachedSpecies) return cachedSpecies;
+  const dir = new URL('../../../packages/content/species/', import.meta.url);
+  const map = new Map<string, SpeciesDefinition>();
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.json')) continue;
+    const raw = JSON.parse(readFileSync(new URL(f, dir), 'utf8')) as Partial<SpeciesDefinition>;
+    if (raw && typeof raw.id === 'string') map.set(raw.id, raw as SpeciesDefinition);
+  }
+  cachedSpecies = map;
+  return map;
+}
+
+let cachedEdges: FoodwebEdge[] | null = null;
+
+/** 加载食物网边（content/interactions/foodweb-edges.json） */
+export function loadFoodwebEdges(): FoodwebEdge[] {
+  if (cachedEdges) return cachedEdges;
+  const raw = JSON.parse(
+    readFileSync(new URL('../../../packages/content/interactions/foodweb-edges.json', import.meta.url), 'utf8'),
+  ) as { edges?: FoodwebEdge[] } | FoodwebEdge[];
+  cachedEdges = Array.isArray(raw) ? raw : (raw.edges ?? []);
+  return cachedEdges;
+}
+
+/** 初始种群投放定义（场景 JSON / 测试用） */
+export interface PopulationSeed {
+  speciesId: string;
+  x: number;
+  y: number;
+  count?: number; // ind（动物）
+  biomass?: number; // kgC（植物；动物缺省按 count×bodyMass×CARBON_FRACTION）
+  energyReserve?: number; // kJ/ind，缺省为半满储备
+}
+
+/**
+ * 向快照投放初始种群（M2 场景入口）。每 cell 每物种至多一个种群（重复拒绝）；
+ * 未填写内容的物种拒绝投放。返回新快照（双缓冲，不改输入）。
+ */
+export function seedPopulations(world: WorldSnapshot, seeds: PopulationSeed[]): WorldSnapshot {
+  const species = loadSpeciesDefinitions();
+  const pops: PopulationState[] = [...world.populations];
+  const seen = new Set(pops.map((p) => `${p.speciesId}@${p.cellId.x},${p.cellId.y}`));
+  for (const s of seeds) {
+    const def = species.get(s.speciesId);
+    if (!def) {
+      throw new Error(`seedPopulations: 物种 "${s.speciesId}" 不存在或内容未填写（content/species）`);
+    }
+    const key = `${s.speciesId}@${s.x},${s.y}`;
+    if (seen.has(key)) throw new Error(`seedPopulations: 重复种群 ${key}（每 cell 每物种至多一个）`);
+    seen.add(key);
+    const isField = def.simulationTier === 'field';
+    const count = isField ? 0 : Math.max(0, s.count ?? 0);
+    const need = def.resources.minimumDailyEnergy;
+    const reserveDays = def.physiology.reserveMaxDays ?? RESERVE_MAX_DAYS;
+    pops.push({
+      speciesId: s.speciesId,
+      cellId: { x: s.x, y: s.y },
+      count,
+      biomass: Math.max(0, s.biomass ?? (isField ? 0 : count * def.physiology.bodyMass * CARBON_FRACTION)),
+      ageStructure: { juvenile: 0.2, adult: 0.7, old: 0.1 },
+      energyReserve: s.energyReserve ?? need * reserveDays * 0.5,
+      health: 0.8,
+      infectionState: {},
+      traitMeans: {},
+      traitVariance: {},
+    });
+  }
+  return createWorldSnapshot({
+    time: world.time,
+    season: world.season,
+    cells: world.cells,
+    populations: pops,
+    agents: world.agents,
+    interactions: world.interactions,
+    events: world.events,
+    randomState: world.randomState,
+  });
 }
 
 // ───────────────────────── 气候初始化（M1，E2/E3/E6） ─────────────────────────

@@ -1,1 +1,79 @@
-{}
+{
+  "id": "grass_c3",
+  "taxonomy": {
+    "domain": "Eukaryota",
+    "kingdom": "Plantae",
+    "phylum": "Angiospermae",
+    "className": "Monocotyledoneae",
+    "order": "Poales",
+    "family": "Poaceae",
+    "genus": "Lolium",
+    "speciesName": "grass_c3",
+    "fictional": false
+  },
+  "roles": {
+    "producer": 1.0,
+    "herbivore": 0,
+    "carnivore": 0,
+    "omnivore": 0,
+    "decomposer": 0,
+    "pollinator": 0,
+    "parasite": 0,
+    "pathogen": 0,
+    "ecosystemEngineer": 0.2
+  },
+  "physiology": {
+    "bodyMass": 0.001,
+    "maturityAge": 0.2,
+    "maximumAge": 1,
+    "rStrategyScore": 0.85,
+    "pMax": 120,
+    "maxBiomass": 2000,
+    "maintenanceRespiration": 0.004,
+    "growthRespiration": 0.25,
+    "tempOptimum": 20,
+    "tempTolerance": 12
+  },
+  "environment": {
+    "temperature": { "min": -5, "max": 35 },
+    "water": { "min": 20, "max": 200 },
+    "biomes": ["grassland", "temperate_forest", "seasonal_forest"]
+  },
+  "resources": {
+    "foodSources": ["sunlight", "soil_water", "soil_nutrients"],
+    "minimumDailyEnergy": 0,
+    "kWater": 50,
+    "kNutrient": 20,
+    "energyDensity": 17000,
+    "conversionEfficiency": 0
+  },
+  "lifeHistory": {
+    "reproductionType": "seed",
+    "offspringPerEvent": { "min": 20, "max": 500 },
+    "reproductiveIntervalYears": 1,
+    "juvenileSurvival": 0.3
+  },
+  "movement": {
+    "dispersalMethod": "seed",
+    "speedKmPerDay": 0.5,
+    "pattern": "diffusive"
+  },
+  "interactions": {
+    "preysOn": [],
+    "preyedOnBy": ["rabbit", "deer"],
+    "competitionCoefficients": { "oak_deciduous": 0.4 }
+  },
+  "genetics": {
+    "heritableTraits": ["droughtTolerance", "coldTolerance"],
+    "mutationRate": 0.001
+  },
+  "disease": {
+    "susceptibility": {}
+  },
+  "ecosystemEffects": {
+    "soilFixation": 0.8,
+    "erosionReduction": 0.7,
+    "flammability": 0.6
+  },
+  "simulationTier": "field"
+}

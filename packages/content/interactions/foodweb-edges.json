@@ -1,1 +1,40 @@
-[]
+{
+  "meta": {
+    "version": "1.0.0",
+    "milestone": "M2",
+    "contract": "docs/00-design-contract.md §12.1 最小可玩生态；§15.2 捕食系数见本文件",
+    "note": "边 schema 为 @non-frozen（契约未冻结字段，Q9）：carnivory 边用 attackRate/handlingTime（B6 Holling II，prey 单位 ind）；herbivory 边用 halfSaturationKgC（B3 herbivory 项，prey 单位 kgC，饱和采食 functional response）。preference 为 0..1 取食偏好权重。"
+  },
+  "edges": [
+    {
+      "predator": "rabbit",
+      "prey": "grass_c3",
+      "type": "herbivory",
+      "preference": 1.0,
+      "halfSaturationKgC": 100
+    },
+    {
+      "predator": "wolf",
+      "prey": "rabbit",
+      "type": "carnivory",
+      "preference": 1.0,
+      "attackRate": 0.014,
+      "handlingTime": 0.3
+    },
+    {
+      "predator": "wolf",
+      "prey": "deer",
+      "type": "carnivory",
+      "preference": 0.5,
+      "attackRate": 0.004,
+      "handlingTime": 0.2
+    },
+    {
+      "predator": "deer",
+      "prey": "grass_c3",
+      "type": "herbivory",
+      "preference": 1.0,
+      "halfSaturationKgC": 500
+    }
+  ]
+}

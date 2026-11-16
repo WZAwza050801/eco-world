@@ -96,6 +96,25 @@ test('serialize → fromSerialized 后继续 next() 与原流逐位一致', () =
 test('fromSerialized 对非法输入抛错', () => {
   assert.throws(() => RandomStream.fromSerialized('not-hex'), RangeError);
   assert.throws(() => RandomStream.fromSerialized(''), RangeError);
+  assert.throws(() => RandomStream.fromSerialized('100000000'), RangeError); // > 2^32-1
+  assert.throws(() => RandomStream.fromSerialized('-80000001'), RangeError); // < -2^31
+});
+
+test('负 state 往返回归（M2 修复）：serialize 输出负十六进制时 fromSerialized 仍逐位恢复', () => {
+  let sawNegative = false;
+  for (let seed = 1; seed <= 60; seed++) {
+    const r = new RandomStream(seed);
+    for (let k = 0; k < 30; k++) {
+      r.next();
+      const s = r.serialize();
+      if (s.startsWith('-')) sawNegative = true;
+      const restored = RandomStream.fromSerialized(s);
+      for (let i = 0; i < 20; i++) {
+        assert.strictEqual(r.next(), restored.next(), `seed=${seed} k=${k} 第 ${i} 个数不一致`);
+      }
+    }
+  }
+  assert.ok(sawNegative, '测试未覆盖负 state（serialize 负十六进制路径）');
 });
 
 test('同 seed 的 nextGaussian 也可复现', () => {

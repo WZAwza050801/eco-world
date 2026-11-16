@@ -1,1 +1,72 @@
-{}
+{
+  "id": "wolf",
+  "taxonomy": {
+    "domain": "Eukaryota",
+    "kingdom": "Animalia",
+    "phylum": "Chordata",
+    "className": "Mammalia",
+    "order": "Carnivora",
+    "family": "Canidae",
+    "genus": "Canis",
+    "speciesName": "wolf",
+    "fictional": false
+  },
+  "roles": {
+    "producer": 0,
+    "herbivore": 0,
+    "carnivore": 1.0,
+    "omnivore": 0,
+    "decomposer": 0,
+    "pollinator": 0,
+    "parasite": 0,
+    "pathogen": 0,
+    "ecosystemEngineer": 0.2
+  },
+  "physiology": {
+    "bodyMass": 40,
+    "maturityAge": 2,
+    "maximumAge": 12,
+    "rStrategyScore": 0.15,
+    "reserveMaxDays": 25
+  },
+  "environment": {
+    "temperature": { "min": -30, "max": 30 },
+    "water": { "min": 10, "max": 300 },
+    "biomes": ["grassland", "temperate_forest", "seasonal_forest", "tundra"]
+  },
+  "resources": {
+    "foodSources": ["rabbit", "deer"],
+    "minimumDailyEnergy": 6000,
+    "energyDensity": 7000,
+    "conversionEfficiency": 0.6
+  },
+  "lifeHistory": {
+    "reproductionType": "sexual",
+    "offspringPerEvent": { "min": 3, "max": 6 },
+    "reproductiveIntervalYears": 1,
+    "juvenileSurvival": 0.7
+  },
+  "movement": {
+    "dispersalMethod": "walking",
+    "speedKmPerDay": 15,
+    "pattern": "territorial"
+  },
+  "interactions": {
+    "preysOn": ["rabbit", "deer"],
+    "preyedOnBy": [],
+    "competitionCoefficients": {}
+  },
+  "genetics": {
+    "heritableTraits": ["bodyMass", "packSize"],
+    "mutationRate": 0.0005
+  },
+  "disease": {
+    "susceptibility": {}
+  },
+  "ecosystemEffects": {
+    "soilFixation": 0,
+    "erosionReduction": 0,
+    "flammability": 0
+  },
+  "simulationTier": "population"
+}
