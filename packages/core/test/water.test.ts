@@ -9,6 +9,14 @@ import assert from 'node:assert/strict';
 import type { Cell, CellId } from '../src/types.js';
 import { computeFlowDirection } from '../src/grid/flowDirection.js';
 import {
+  offsetToCube,
+  cubeToOffset,
+  hexNeighbors,
+  hexDistance,
+  hexCenter,
+  fitPlaneGradient,
+} from '../src/grid/hex.js';
+import {
   waterBalance,
   stepHydrology,
   FIELD_CAPACITY_MM,
@@ -263,4 +271,42 @@ test('E5: 低温/干旱/无真菌时分解停止；植物吸收（M2 接口）�
   const uptake = stepNutrients({ ...base, plantUptake: 2 });
   closeTo(uptake.nutrients, 100 + 0.8 + 0.1 - 2);
   closeTo(uptake.plantUptake, 2);
+});
+
+// ───────────────────────── 六边形网格工具（v2.2/Q6） ─────────────────────────
+
+test('hex: offset↔cube 往返一致；cube 坐标和为 0', () => {
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const c = offsetToCube(col, row);
+      closeTo(c.x + c.y + c.z, 0);
+      const back = cubeToOffset(c);
+      assert.equal(back.col, col);
+      assert.equal(back.row, row);
+    }
+  }
+});
+
+test('hex: 格距自反/对称/相邻为 1；内部格 6 邻居', () => {
+  const a = { x: 5, y: 5 }, b = { x: 8, y: 2 };
+  closeTo(hexDistance(a, a), 0);
+  closeTo(hexDistance(a, b), hexDistance(b, a));
+  const nbrs = hexNeighbors(5, 5, 12, 12);
+  assert.equal(nbrs.length, 6);
+  for (const n of nbrs) closeTo(hexDistance(a, n), 1);
+});
+
+test('hex: 最小二乘平面拟合精确恢复已知梯度（坡度/坡向推导基础）', () => {
+  const center = { x: 5, y: 5 };
+  const c0 = hexCenter(center.x, center.y);
+  const pts = [{ px: c0.px, py: c0.py, e: 3 * c0.px - 2 * c0.py + 5 }];
+  for (const n of hexNeighbors(center.x, center.y, 12, 12)) {
+    const cn = hexCenter(n.x, n.y);
+    pts.push({ px: cn.px, py: cn.py, e: 3 * cn.px - 2 * cn.py + 5 });
+  }
+  const { a, b } = fitPlaneGradient(pts);
+  closeTo(a, 3, 1e-6);
+  closeTo(b, -2, 1e-6);
+  // 退化（<3 点）→ 零梯度
+  closeTo(fitPlaneGradient([{ px: 0, py: 0, e: 1 }]).a, 0);
 });

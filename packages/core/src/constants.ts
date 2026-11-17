@@ -12,9 +12,10 @@
 /** 契约 §2：世界尺寸与时间 */
 export const WORLD = {
   W: 128, // 列数
-  H: 128, // 行数
-  CELL_EDGE_KM: 10, // 单元格边长
-  CELL_AREA_KM2: 100,
+  H: 128, // 行数（odd-r offset row）
+  CELL_EDGE_KM: 10, // 六边形中心距 spacing（v2.2/Q6：原方形边长语义改为中心距，迁移能力标定不变）
+  CELL_HEX_SIDE_KM: 10 / Math.sqrt(3), // 六边形边长 ≈ 5.7735 km（v2.2 新增）
+  CELL_AREA_KM2: (Math.sqrt(3) / 2) * 100, // 六边形面积 (√3/2)d² ≈ 86.60 km²（v2.2：原 100）
   DAYS_PER_YEAR: 365,
   SEASON_LENGTH_DAYS: 91, // 约一季度
   TICKS_PER_DAY: 1, // 生态 tick

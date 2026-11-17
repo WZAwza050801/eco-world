@@ -14,7 +14,7 @@
  * 随机性红线：全部随机数来自注入的 RandomStream（契约 §8.3），禁 Math.random。
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import type { Cell, CellId, GeologicalType, TerrainType, BiomeType, PopulationState, SpeciesDefinition, WorldSnapshot } from '../../core/src/types.js';
+import type { Cell, GeologicalType, TerrainType, BiomeType, PopulationState, SpeciesDefinition, WorldSnapshot } from '../../core/src/types.js';
 import { HYDROLOGY, WORLD } from '../../core/src/constants.js';
 import { RandomStream } from '../../core/src/random/RandomStream.js';
 import { temperature } from '../../core/src/climate/temperature.js';
@@ -22,6 +22,7 @@ import { precipitation, relativeHumidity } from '../../core/src/climate/precipit
 import { classifyBiome, type BiomeRule } from '../../core/src/climate/biome.js';
 import { FIELD_CAPACITY_MM } from '../../core/src/hydrology/waterBalance.js';
 import { CARBON_FRACTION, RESERVE_MAX_DAYS } from '../../core/src/biology/population.js';
+import { hexNeighbors, hexCenter, hexLonLat, fitPlaneGradient } from '../../core/src/grid/hex.js';
 import { createWorldSnapshot } from './snapshot.js';
 
 // ───────────────────────── Perlin 噪声（2D） ─────────────────────────
@@ -332,13 +333,13 @@ export function generateTerrainCells(opts: TerrainOptions): Cell[] {
   const elev = new Float64Array(W * H);
   const landFrac = new Float64Array(W * H);
   for (let y = 0; y < H; y++) {
-    const lat = 90 - (180 * (y + 0.5)) / H;
     for (let x = 0; x < W; x++) {
-      const lon = (360 * (x + 0.5)) / W - 180;
+      const { lon, lat } = hexLonLat(x, y, W, H); // 六边形中心经纬度（行奇偶偏半格，v2.2）
       const lwm = landFractionAt(lon, lat); // 真实陆地分数 0..1
       landFrac[y * W + x] = lwm;
-      const detail = clamp01(perlin.fbm(x * scale, y * scale, 6) * 0.9 + 0.5); // 0..1（拉伸动态范围）
-      const ridge = clamp01(mountain.fbm(x * scale * 1.7 + 37.3, y * scale * 1.7 - 11.7, 4) * 0.9 + 0.5); // 山脉带 0..1
+      const ctr = hexCenter(x, y, 1); // 单位中心距 Cartesian（噪声采样位置）
+      const detail = clamp01(perlin.fbm(ctr.px * scale, ctr.py * scale, 6) * 0.9 + 0.5); // 0..1
+      const ridge = clamp01(mountain.fbm(ctr.px * scale * 1.7 + 37.3, ctr.py * scale * 1.7 - 11.7, 4) * 0.9 + 0.5); // 山脉带 0..1
       let e: number;
       if (lwm >= 0.5) {
         // 陆地：幂曲线 + 山脉带起伏度（平原为主，山成条状）
@@ -364,21 +365,22 @@ export function generateTerrainCells(opts: TerrainOptions): Cell[] {
       const i = y * W + x;
       const e = elev[i] as number;
 
-      // 中心差分梯度（边界取单侧）
-      const eE = elev[y * W + Math.min(x + 1, W - 1)] as number;
-      const eW_ = elev[y * W + Math.max(x - 1, 0)] as number;
-      const eS = elev[Math.min(y + 1, H - 1) * W + x] as number;
-      const eN = elev[Math.max(y - 1, 0) * W + x] as number;
-      const dzdx = (eE - eW_) / 2;
-      const dzdy = (eS - eN) / 2; // y+ 向南
-
-      const grad = Math.hypot(dzdx, dzdy) / (WORLD.CELL_EDGE_KM * 1000); // tan
+      // 六边形坡度/坡向：中心+6 邻居最小二乘平面拟合（v2.2，替代方形中心差分）
+      const nbrs = hexNeighbors(x, y, W, H);
+      const c0 = hexCenter(x, y);
+      const pts = [{ px: c0.px, py: c0.py, e }];
+      for (const nb of nbrs) {
+        const cn = hexCenter(nb.x, nb.y);
+        pts.push({ px: cn.px, py: cn.py, e: elev[nb.y * W + nb.x] as number });
+      }
+      const { a, b } = fitPlaneGradient(pts); // de/dpx, de/dpy（每 km；px 东、py 南）
+      const grad = Math.hypot(a, b) / 1000; // tan（m/m）
       const slope = Math.min(1, Math.atan(grad) / (Math.PI / 2)); // 0..1 归一化
 
-      // 坡向（下坡方向方位角，0=北[-y]，顺时针为东[+x]）；平地记 0
-      const aspect = dzdx === 0 && dzdy === 0
+      // 坡向（下坡方位角，0=北[-py]，顺时针东[+px]）；平地记 0
+      const aspect = a === 0 && b === 0
         ? 0
-        : ((Math.atan2(-dzdx, dzdy) + 2 * Math.PI) % (2 * Math.PI)); // rad
+        : ((Math.atan2(-a, b) + 2 * Math.PI) % (2 * Math.PI)); // rad
 
       // 海陆分数：直接取真实掩模的陆地分数（海岸带自带中间值）
       const lwf = 1 - (landFrac[i] as number);
@@ -398,7 +400,7 @@ export function generateTerrainCells(opts: TerrainOptions): Cell[] {
         landWaterFraction: lwf,
         coastDistance: 0,
         latitude: lat,
-        neighbors: fourNeighbors(x, y, W, H),
+        neighbors: nbrs, // 六边形 6 邻居（v2.2，上方已算）
         // 动态环境场：中性初值，由 initializeClimate（M1，E2/E3/E6）覆盖；
         // E4/E5 动态更新自 tick 1 起由 scheduler.stepEnvironment 执行
         temperature: 0,
@@ -442,16 +444,6 @@ export function generateWorld(opts: TerrainOptions): WorldSnapshot {
 }
 
 // ───────────────────────── 内部工具 ─────────────────────────
-
-/** 契约 §1.3：4 邻域（上右下左），边界墙——不含越界邻居 */
-function fourNeighbors(x: number, y: number, W: number, H: number): CellId[] {
-  const n: CellId[] = [];
-  if (y > 0) n.push({ x, y: y - 1 });
-  if (x < W - 1) n.push({ x: x + 1, y });
-  if (y < H - 1) n.push({ x, y: y + 1 });
-  if (x > 0) n.push({ x: x - 1, y });
-  return n;
-}
 
 function classifyTerrain(elevation: number, slope: number): TerrainType {
   if (elevation < 0) return 'ocean';

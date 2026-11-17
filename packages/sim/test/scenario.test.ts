@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import type { Cell } from '../../core/src/types.js';
 import { HYDROLOGY, SOIL, WORLD } from '../../core/src/constants.js';
 import { computeFlowDirection } from '../../core/src/grid/flowDirection.js';
+import { hexNeighbors, hexDistance } from '../../core/src/grid/hex.js';
 import { RandomStream } from '../../core/src/random/RandomStream.js';
 import { generateTerrainCells, generateWorld, landFractionAt } from '../src/scenario.js';
 import { stepEnvironment } from '../src/scheduler.js';
@@ -125,21 +126,24 @@ test('数值健全：无 NaN/Infinity，slope∈[0,1]，coastDistance≥0，aspe
   assert.ok(hasMountain && hasDeepOcean);
 });
 
-test('4 邻域边界墙：角落 2 邻居、边缘 3、内部 4，无越界', () => {
+test('六边形 6 邻域边界墙（v2.2/Q6）：内部 6、边界 <6、无越界/重复/自环、对称、格距 1、与 hexNeighbors 一致', () => {
   const cells = generateTerrainCells({ seed: SEED, width: 16, height: 16 });
-  const at = (x: number, y: number) => cells[y * 16 + x] as { neighbors: { x: number; y: number }[] };
-  assert.equal(at(0, 0).neighbors.length, 2);
-  assert.equal(at(15, 0).neighbors.length, 2);
-  assert.equal(at(0, 15).neighbors.length, 2);
-  assert.equal(at(15, 15).neighbors.length, 2);
-  assert.equal(at(8, 0).neighbors.length, 3);
-  assert.equal(at(8, 15).neighbors.length, 3);
-  assert.equal(at(0, 8).neighbors.length, 3);
-  assert.equal(at(15, 8).neighbors.length, 3);
-  assert.equal(at(8, 8).neighbors.length, 4);
+  const at = (x: number, y: number) => cells[y * 16 + x] as Cell;
+  const key = (n: { x: number; y: number }) => `${n.x},${n.y}`;
+  assert.equal(at(8, 8).neighbors.length, 6); // 内部格
+  assert.equal(at(7, 7).neighbors.length, 6);
+  assert.ok(at(0, 0).neighbors.length < 6); // 边界格
+  assert.ok(at(15, 15).neighbors.length < 6);
   for (const c of cells) {
+    const ks = c.neighbors.map(key);
+    assert.equal(new Set(ks).size, ks.length, '邻居重复');
+    assert.ok(!ks.includes(key(c.id)), '邻居含自身');
+    assert.ok(c.neighbors.length <= 6, '邻居数超 6');
+    assert.deepEqual(ks.slice().sort(), hexNeighbors(c.id.x, c.id.y, 16, 16).map(key).sort(), '与 hexNeighbors 不一致');
     for (const nb of c.neighbors) {
       assert.ok(nb.x >= 0 && nb.x < 16 && nb.y >= 0 && nb.y < 16, '邻居越界');
+      assert.equal(hexDistance(c.id, nb), 1, '邻居格距应为 1');
+      assert.ok(at(nb.x, nb.y).neighbors.some((n) => key(n) === key(c.id)), '邻居关系不对称');
     }
   }
 });
