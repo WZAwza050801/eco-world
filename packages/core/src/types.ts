@@ -78,7 +78,8 @@ export interface PopulationState {
   ageStructure: { juvenile: number; adult: number; old: number }; // 比例和
   energyReserve: number; // kJ/ind 平均
   health: number; // 0..1
-  infectionState: Record<string, number>; // pathogenId -> 感染个体比例 0..1
+  infectionState: Record<string, number>; // pathogenId -> 感染个体比例 I 0..1
+  recoveredState?: Record<string, number>; // Q11 @non-frozen 可选扩展：pathogenId -> 康复比例 R 0..1（S=1−I−R）
   traitMeans: Record<string, number>; // 性状均值
   traitVariance: Record<string, number>;
 }
@@ -307,4 +308,24 @@ export interface CausalFactor {
 export interface Outcome {
   description: string;
   magnitude: number;
+}
+
+/**
+ * @non-frozen 占位（Q11）：契约 §6 引用 PathogenDefinition 但 §3 未定义；
+ * 按 §6（SIR/transmissionMode/hostJumpPotential）与 §15.5（virus_rabbit 实例）推导。
+ * 病原内容存于 content/species/*.json，以 transmissionMode 字段与物种区分
+ * （loadPathogenDefinitions 加载）。待契约 v2.3 冻结。
+ */
+export interface PathogenDefinition {
+  id: string;
+  hostSpecies: string[]; // 易感宿主 speciesId
+  transmissionMode: 'contact' | 'air' | 'water' | 'vector' | 'food'; // 传播邻域（§6）
+  transmissionRate: number; // 1/day 基础传播率
+  recoveryRate: number; // 1/day 康复率
+  mortalityRate: number; // 1/day 感染额外死亡率（毒力）
+  incubationPeriod: number; // day 潜伏期
+  environmentalPersistence: number; // 0..1 环境存活能力
+  hostJumpPotential: number; // 0..1 宿主跳转稀有事件概率（§8）
+  mutationRate: number; // 0..1 突变率
+  densityThreshold: number; // ind/cell 密度阈值（§8.2 高密度更易传播）
 }

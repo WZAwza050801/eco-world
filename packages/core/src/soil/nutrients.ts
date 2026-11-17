@@ -99,3 +99,66 @@ export function stepNutrients(input: NutrientInput): NutrientResult {
     erosion,
   };
 }
+
+// ───────────────────────── 分解真菌（M4，§15.4） ─────────────────────────
+
+/** @non-frozen（Q11）：真菌最大生长率 1/day（最优温湿+有机质饱和） */
+export const FUNGUS_GROWTH_RATE = 0.1;
+/** @non-frozen（Q11）：真菌维持呼吸 1/day */
+export const FUNGUS_MAINTENANCE = 0.02;
+/** @non-frozen（Q11）：真菌死亡率 1/day */
+export const FUNGUS_MORTALITY = 0.01;
+/** @non-frozen（Q11）：有机质半饱和 kgC/cell */
+export const FUNGUS_OM_HALF_SAT = 200;
+/** @non-frozen（Q11）：同化产率 kgC 真菌/kgC 有机质 */
+export const FUNGUS_YIELD = 0.5;
+/** @non-frozen（Q11）：真菌活性参考生物量 kgC（活性 = 1 + biomass/参考） */
+export const FUNGUS_REF_BIOMASS = 100;
+/** @non-frozen（Q11）：真菌活性上限（E5 分解乘子） */
+export const FUNGUS_MAX_ACTIVITY = 5;
+
+/** 真菌生物量 → E5 fungiActivity（无真菌基线 1，有真菌加速分解，上限 FUNGUS_MAX_ACTIVITY） */
+export function fungiActivityFromBiomass(biomass: number): number {
+  return clamp(1 + Math.max(0, biomass) / FUNGUS_REF_BIOMASS, 1, FUNGUS_MAX_ACTIVITY);
+}
+
+export interface FungusInput {
+  biomass: number; // kgC/cell 菌落生物量
+  organicMatter: number; // kgC/cell 死亡有机质（底物）
+  temperature: number; // °C
+  soilMoisture: number; // mm
+}
+
+export interface FungusResult {
+  biomass: number; // kgC/cell 更新后
+  organicMatter: number; // kgC/cell 同化扣减后
+  assimilatedC: number; // kgC/day 同化有机质
+  respiredC: number; // kgC/day 呼吸损失（CO2）
+  deadC: number; // kgC/day 死亡菌体（→ 有机质）
+}
+
+/**
+ * 分解真菌一步更新（@non-frozen Q11， saprotroph）：
+ * 生长 ∝ 生物量×温湿适宜度×有机质饱和；同化有机质建生物量（产率 YIELD）；
+ * 维持呼吸+死亡消耗生物量；死亡菌体回有机质。湿度高+有机质多+温度适宜 → 分解快（§15.4）。
+ */
+export function stepFungus(input: FungusInput): FungusResult {
+  const tempF = clamp01(input.temperature / 25);
+  const moistF = clamp01(input.soilMoisture / 100);
+  const suit = tempF * moistF;
+  const om = Math.max(0, input.organicMatter);
+  const b = Math.max(0, input.biomass);
+  const growth = FUNGUS_GROWTH_RATE * b * suit * (om / (om + FUNGUS_OM_HALF_SAT));
+  const assimilatedC = Math.min(om, growth / FUNGUS_YIELD);
+  const growthActual = assimilatedC * FUNGUS_YIELD;
+  const respiredC = FUNGUS_MAINTENANCE * b;
+  const deadC = FUNGUS_MORTALITY * b;
+  const biomass = Math.max(0, b + growthActual - respiredC - deadC);
+  return {
+    biomass,
+    organicMatter: Math.max(0, om - assimilatedC),
+    assimilatedC,
+    respiredC,
+    deadC,
+  };
+}

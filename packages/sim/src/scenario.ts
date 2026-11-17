@@ -14,7 +14,7 @@
  * 随机性红线：全部随机数来自注入的 RandomStream（契约 §8.3），禁 Math.random。
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import type { Cell, GeologicalType, TerrainType, BiomeType, PopulationState, SpeciesDefinition, WorldSnapshot } from '../../core/src/types.js';
+import type { Cell, GeologicalType, TerrainType, BiomeType, PopulationState, SpeciesDefinition, PathogenDefinition, WorldSnapshot } from '../../core/src/types.js';
 import { HYDROLOGY, WORLD } from '../../core/src/constants.js';
 import { RandomStream } from '../../core/src/random/RandomStream.js';
 import { temperature } from '../../core/src/climate/temperature.js';
@@ -160,7 +160,7 @@ export interface FoodwebEdge {
 
 let cachedSpecies: Map<string, SpeciesDefinition> | null = null;
 
-/** 加载 content/species/*.json（纯数据）；空 {} 占位（M3–M5 未填物种）跳过 */
+/** 加载 content/species/*.json 中的**物种**（有 simulationTier）；空 {} 与病原跳过 */
 export function loadSpeciesDefinitions(): Map<string, SpeciesDefinition> {
   if (cachedSpecies) return cachedSpecies;
   const dir = new URL('../../../packages/content/species/', import.meta.url);
@@ -168,9 +168,29 @@ export function loadSpeciesDefinitions(): Map<string, SpeciesDefinition> {
   for (const f of readdirSync(dir)) {
     if (!f.endsWith('.json')) continue;
     const raw = JSON.parse(readFileSync(new URL(f, dir), 'utf8')) as Partial<SpeciesDefinition>;
-    if (raw && typeof raw.id === 'string') map.set(raw.id, raw as SpeciesDefinition);
+    if (raw && typeof raw.id === 'string' && typeof raw.simulationTier === 'string') {
+      map.set(raw.id, raw as SpeciesDefinition);
+    }
   }
   cachedSpecies = map;
+  return map;
+}
+
+let cachedPathogens: Map<string, PathogenDefinition> | null = null;
+
+/** 加载 content/species/*.json 中的**病原**（有 transmissionMode，Q11）；与物种按判别字段分离 */
+export function loadPathogenDefinitions(): Map<string, PathogenDefinition> {
+  if (cachedPathogens) return cachedPathogens;
+  const dir = new URL('../../../packages/content/species/', import.meta.url);
+  const map = new Map<string, PathogenDefinition>();
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.json')) continue;
+    const raw = JSON.parse(readFileSync(new URL(f, dir), 'utf8')) as Partial<PathogenDefinition>;
+    if (raw && typeof raw.id === 'string' && typeof raw.transmissionMode === 'string') {
+      map.set(raw.id, raw as PathogenDefinition);
+    }
+  }
+  cachedPathogens = map;
   return map;
 }
 
@@ -194,6 +214,7 @@ export interface PopulationSeed {
   count?: number; // ind（动物）
   biomass?: number; // kgC（植物；动物缺省按 count×bodyMass×CARBON_FRACTION）
   energyReserve?: number; // kJ/ind，缺省为半满储备
+  infectionState?: Record<string, number>; // M4：初始感染比例 I（pathogenId -> 0..1）
 }
 
 /**
@@ -224,7 +245,8 @@ export function seedPopulations(world: WorldSnapshot, seeds: PopulationSeed[]): 
       ageStructure: { juvenile: 0.2, adult: 0.7, old: 0.1 },
       energyReserve: s.energyReserve ?? need * reserveDays * 0.5,
       health: 0.8,
-      infectionState: {},
+      infectionState: s.infectionState ?? {},
+      recoveredState: {},
       // M3 遗传初始化（@non-frozen Q10）：耐受性状均值 0（中性）、方差 1
       traitMeans: Object.fromEntries((def.genetics?.heritableTraits ?? []).map((t) => [t, 0])),
       traitVariance: Object.fromEntries((def.genetics?.heritableTraits ?? []).map((t) => [t, 1])),

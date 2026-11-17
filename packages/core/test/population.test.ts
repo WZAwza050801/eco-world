@@ -49,6 +49,18 @@ import {
   MAX_EMIGRATION_FRACTION,
 } from '../src/biology/dispersal.js';
 import { traitSelectionDelta, traitMutationDelta, HERITABILITY_DEFAULT } from '../src/biology/population.js';
+import {
+  stepSIR,
+  densityFactor,
+  environmentalFactor,
+  DENSITY_TRANSMISSION_MAX,
+} from '../src/disease/sir.js';
+import {
+  stepFungus,
+  stepNutrients,
+  fungiActivityFromBiomass,
+  FUNGUS_MAX_ACTIVITY,
+} from '../src/soil/nutrients.js';
 import type { Cell, SpeciesDefinition } from '../src/types.js';
 import { BIOLOGY, WORLD } from '../src/constants.js';
 import { RandomStream } from '../src/random/RandomStream.js';
@@ -301,4 +313,88 @@ test('遗传: Lande 方程 Δmean = h²σ²β/世代天数；方差 0 → 无选
   for (let i = 0; i < 100; i++) {
     closeTo(traitMutationDelta(a.nextGaussian(), 0.002, 36.5), traitMutationDelta(b.nextGaussian(), 0.002, 36.5));
   }
+});
+
+// ───────────────────────── M4：D1 疾病 SIR ─────────────────────────
+
+test('D1: 密度因子 = count/threshold（clamp），阈值即流行 tipping point；环境因子随湿度/温度/存活能力', () => {
+  closeTo(densityFactor(50, 100), 0.5);
+  closeTo(densityFactor(300, 100), 3);
+  closeTo(densityFactor(1e9, 100), DENSITY_TRANSMISSION_MAX);
+  closeTo(densityFactor(50, 0), 1); // 无阈值 → 中性
+  closeTo(environmentalFactor(0.5, 30, 1), 1); // 湿暖+全存活
+  assert.ok(environmentalFactor(0, 30, 1) < 0.01); // 干燥抑制
+  assert.ok(environmentalFactor(0.5, -10, 1) < 0.01); // 低温抑制
+  closeTo(environmentalFactor(0.5, 30, 0), 0); // 无存活能力
+});
+
+test('D1: SIR 比例守恒 S+I+R = 1 − deaths（死亡移除质量）；冻结公式精确值', () => {
+  const r = stepSIR({
+    susceptible: 0.9, infected: 0.1, recovered: 0,
+    transmissionRate: 0.5, recoveryRate: 0.1, mortalityRate: 0.4,
+    densityFactor: 1, environmentalFactor: 1,
+  });
+  closeTo(r.newInfections, 0.5 * 0.9 * 0.1); // 0.045
+  closeTo(r.recoveries, 0.01);
+  closeTo(r.deaths, 0.04);
+  closeTo(r.susceptible, 0.855);
+  closeTo(r.infected, 0.095);
+  closeTo(r.recovered, 0.01);
+  closeTo(r.susceptible + r.infected + r.recovered, 1 - r.deaths);
+});
+
+test('D1 验收核心：高密度更易传播——高 densityFactor 新感染更多；R0>1 爆发 / R0<1 消退', () => {
+  const base = {
+    susceptible: 0.99, infected: 0.01, recovered: 0,
+    transmissionRate: 0.8, recoveryRate: 0.1, mortalityRate: 0.4,
+    environmentalFactor: 1,
+  };
+  const high = stepSIR({ ...base, densityFactor: 3 }); // R0 = 0.8·3/0.5 = 4.8 > 1
+  const low = stepSIR({ ...base, densityFactor: 0.3 }); // R0 = 0.48 < 1
+  assert.ok(high.newInfections > low.newInfections, '高密度新感染应更多');
+  assert.ok(high.infected > base.infected, 'R0>1 感染比例应上升（爆发）');
+  assert.ok(low.infected < base.infected, 'R0<1 感染比例应下降（消退）');
+});
+
+test('D1: 边界——newInfections ≤ S，rec+death ≤ I，比例非负；邻居暴露增强传播', () => {
+  const r = stepSIR({
+    susceptible: 0.2, infected: 0.8, recovered: 0,
+    transmissionRate: 100, recoveryRate: 100, mortalityRate: 100,
+    densityFactor: 10, environmentalFactor: 1,
+  });
+  assert.ok(r.newInfections <= 0.2 + 1e-9);
+  assert.ok(r.recoveries + r.deaths <= 0.8 + 1e-9);
+  assert.ok(r.susceptible >= 0 && r.infected >= 0 && r.recovered >= 0);
+  const local = stepSIR({ susceptible: 0.9, infected: 0.1, recovered: 0, transmissionRate: 0.5, recoveryRate: 0.1, mortalityRate: 0.4, densityFactor: 1, environmentalFactor: 1 });
+  const exposed = stepSIR({ susceptible: 0.9, infected: 0.1, recovered: 0, exposure: 0.5, transmissionRate: 0.5, recoveryRate: 0.1, mortalityRate: 0.4, densityFactor: 1, environmentalFactor: 1 });
+  assert.ok(exposed.newInfections > local.newInfections, '邻居暴露应增强传播');
+});
+
+// ───────────────────────── M4：分解真菌 ─────────────────────────
+
+test('真菌: 生物量 → E5 活性（基线 1，随生物量升，上限 FUNGUS_MAX_ACTIVITY）', () => {
+  closeTo(fungiActivityFromBiomass(0), 1);
+  closeTo(fungiActivityFromBiomass(100), 2);
+  closeTo(fungiActivityFromBiomass(1e9), FUNGUS_MAX_ACTIVITY);
+});
+
+test('真菌: E5 分解通量随 fungiActivity 线性加速（矿化更多营养，§15.4 加速养分循环）', () => {
+  const base = { nutrients: 50, organicMatter: 1000, soilMoisture: 100, temperature: 25, slope: 0, precipitation: 0 };
+  const d1 = stepNutrients({ ...base, fungiActivity: 1 });
+  const d3 = stepNutrients({ ...base, fungiActivity: 3 });
+  closeTo(d3.decomposition, 3 * d1.decomposition);
+  assert.ok(d3.nutrients > d1.nutrients, '高真菌活性应矿化更多营养');
+});
+
+test('真菌: 温湿+有机质充足时生长并同化有机质；无有机质/低温干燥时衰减（§15.4）', () => {
+  const grow = stepFungus({ biomass: 50, organicMatter: 1000, temperature: 25, soilMoisture: 100 });
+  assert.ok(grow.biomass > 50, '充足条件下真菌应生长');
+  assert.ok(grow.assimilatedC > 0 && grow.organicMatter < 1000, '应同化有机质');
+  assert.ok(grow.deadC > 0, '死亡菌体回有机质');
+  const starve = stepFungus({ biomass: 50, organicMatter: 0, temperature: 25, soilMoisture: 100 });
+  assert.ok(starve.biomass < 50, '无有机质应衰减');
+  const cold = stepFungus({ biomass: 50, organicMatter: 1000, temperature: 0, soilMoisture: 100 });
+  assert.ok(cold.biomass < 50, '低温应衰减');
+  const dry = stepFungus({ biomass: 50, organicMatter: 1000, temperature: 25, soilMoisture: 0 });
+  assert.ok(dry.biomass < 50, '干燥应衰减');
 });

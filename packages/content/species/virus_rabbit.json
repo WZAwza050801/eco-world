@@ -1,1 +1,13 @@
-{}
+{
+  "id": "virus_rabbit",
+  "hostSpecies": ["rabbit"],
+  "transmissionMode": "contact",
+  "transmissionRate": 0.8,
+  "recoveryRate": 0.1,
+  "mortalityRate": 0.4,
+  "incubationPeriod": 2,
+  "environmentalPersistence": 0.8,
+  "hostJumpPotential": 0.001,
+  "mutationRate": 0.0001,
+  "densityThreshold": 100
+}

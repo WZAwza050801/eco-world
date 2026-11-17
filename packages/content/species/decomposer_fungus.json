@@ -1,1 +1,70 @@
-{}
+{
+  "id": "decomposer_fungus",
+  "taxonomy": {
+    "domain": "Eukaryota",
+    "kingdom": "Fungi",
+    "phylum": "Basidiomycota",
+    "className": "Agaricomycetes",
+    "order": "Agaricales",
+    "family": "Agaricaceae",
+    "genus": "Agaricus",
+    "speciesName": "decomposer_fungus",
+    "fictional": false
+  },
+  "roles": {
+    "producer": 0,
+    "herbivore": 0,
+    "carnivore": 0,
+    "omnivore": 0,
+    "decomposer": 1.0,
+    "pollinator": 0,
+    "parasite": 0,
+    "pathogen": 0,
+    "ecosystemEngineer": 0.3
+  },
+  "physiology": {
+    "bodyMass": 0.001,
+    "maturityAge": 0.1,
+    "maximumAge": 2,
+    "rStrategyScore": 0.8,
+    "maxBiomass": 500
+  },
+  "environment": {
+    "temperature": { "min": 0, "max": 35 },
+    "water": { "min": 30, "max": 200 },
+    "biomes": ["grassland", "temperate_forest", "tropical_forest", "wetland", "seasonal_forest"]
+  },
+  "resources": {
+    "foodSources": ["organicMatter"],
+    "minimumDailyEnergy": 0
+  },
+  "lifeHistory": {
+    "reproductionType": "seed",
+    "offspringPerEvent": { "min": 100, "max": 1000 },
+    "reproductiveIntervalYears": 0.2,
+    "juvenileSurvival": 0.3
+  },
+  "movement": {
+    "dispersalMethod": "spore",
+    "speedKmPerDay": 5,
+    "pattern": "diffusive"
+  },
+  "interactions": {
+    "preysOn": [],
+    "preyedOnBy": [],
+    "competitionCoefficients": {}
+  },
+  "genetics": {
+    "heritableTraits": ["decompositionRate"],
+    "mutationRate": 0.003
+  },
+  "disease": {
+    "susceptibility": {}
+  },
+  "ecosystemEffects": {
+    "soilFixation": 0.2,
+    "erosionReduction": 0.3,
+    "flammability": 0.1
+  },
+  "simulationTier": "field"
+}

@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "name": "兔病毒高密度爆发（M4 演示场景）",
+    "contract": "docs/00-design-contract.md §6 D1 / §15.5 virus_rabbit / §16 M4 验收：高密度更易传播",
+    "note": "均质暖湿平原（lat 0），兔 250/cell（>密度阈值 100）+ 初始感染 5% → R0>1 爆发，疾病死亡压低种群。对照：把 infectionState 改 0 或兔改 30/cell（<阈值）则消退。与 sim/test/disease.test.ts 同构。"
+  },
+  "seed": 20261116,
+  "width": 6,
+  "height": 6,
+  "ticks": 60,
+  "overrides": {
+    "latitude": 0, "elevation": 50, "slope": 0, "aspect": 0,
+    "terrainType": "plain", "landWaterFraction": 0, "coastDistance": 0,
+    "salinity": 0.1, "soilMoisture": 200, "nutrients": 300, "organicMatter": 500,
+    "surfaceWater": 0, "groundwater": 0, "accessibility": 1
+  },
+  "populations": [
+    { "speciesId": "grass_c3", "biomass": 2000, "all": true },
+    { "speciesId": "rabbit", "count": 250, "infectionState": { "virus_rabbit": 0.05 }, "all": true }
+  ]
+}

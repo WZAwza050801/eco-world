@@ -3,14 +3,16 @@
  * M1：步骤 2–4（stepEnvironment：气候/水文/土壤，E1–E6）。
  * M2：stepWorld 填充步骤 1–7、9、12（B1–B7 植物-草食-捕食闭环）。
  * M3：步骤 9 续接遗传（Lande 方程，§9.1 十年代尺度）与迁徙扩散（B9，
- *     两阶段流量计算；硬致死带清除不适生种群，空适生格可定殖）；
- *     步骤 8（疾病 M4）、10（智人 M5）、11（事件因果 M6）为显式占位，位置保留。
+ *     两阶段流量计算；硬致死带清除不适生种群，空适生格可定殖）。
+ * M4：步骤 8 疾病（D1 SIR，密度依赖传播+环境因子+六边形传播邻域，疾病死亡直接移除）；
+ *     步骤 5 分解真菌（stepFungus，生物量驱动 E5 fungiActivity）；
+ *     步骤 10（智人 M5）、11（事件因果 M6，含宿主跳转稀有事件）为显式占位，位置保留。
  *
  * §9.3 双缓冲解释：不修改 prev 快照对象；管线内下游步骤读上游步骤产出的
  * 新状态（与 M1 stepEnvironment 内部链一致），最后统一 commit 为新快照。
  * §8.3 随机：所有噪声/微观随机取自 rng 的稳定 fork，按固定顺序消费，重放一致。
  */
-import type { Cell, PopulationState, SpeciesDefinition, WorldSnapshot } from '../../core/src/types.js';
+import type { Cell, PopulationState, SpeciesDefinition, PathogenDefinition, WorldSnapshot } from '../../core/src/types.js';
 import type { RandomStream } from '../../core/src/random/RandomStream.js';
 import { BIOLOGY, WORLD } from '../../core/src/constants.js';
 import { solarInput } from '../../core/src/climate/solar.js';
@@ -26,7 +28,13 @@ import {
 import { classifyBiome } from '../../core/src/climate/biome.js';
 import { computeFlowDirection } from '../../core/src/grid/flowDirection.js';
 import { stepHydrology } from '../../core/src/hydrology/waterBalance.js';
-import { stepNutrients } from '../../core/src/soil/nutrients.js';
+import { stepNutrients, stepFungus, fungiActivityFromBiomass } from '../../core/src/soil/nutrients.js';
+import {
+  stepSIR,
+  densityFactor as transmissionDensityFactor,
+  environmentalFactor as pathogenEnvironmentalFactor,
+  NEIGHBOR_EXPOSURE_WEIGHT,
+} from '../../core/src/disease/sir.js';
 import {
   grossPrimaryProduction,
   plantGrowth,
@@ -70,6 +78,7 @@ import {
   loadBiomeRules,
   loadFoodwebEdges,
   loadSpeciesDefinitions,
+  loadPathogenDefinitions,
   type FoodwebEdge,
 } from './scenario.js';
 import { createWorldSnapshot } from './snapshot.js';
@@ -164,6 +173,7 @@ export function stepEnvironment(
   flow: Int32Array,
   day: number,
   rng: RandomStream,
+  fungiActivityByCell?: Map<number, number>,
 ): Cell[] {
   const weather = rng.fork('core:climate:weather');
   const storm = rng.fork('core:climate:storm');
@@ -201,7 +211,7 @@ export function stepEnvironment(
 
   // 步骤 4：E5 土壤/营养 + E6 群系派生缓存
   const rules = loadBiomeRules();
-  return waterNext.map((c) => {
+  return waterNext.map((c, i) => {
     const n = stepNutrients({
       nutrients: c.nutrients,
       organicMatter: c.organicMatter,
@@ -209,6 +219,7 @@ export function stepEnvironment(
       temperature: c.temperature,
       slope: c.slope,
       precipitation: c.precipitation,
+      fungiActivity: fungiActivityByCell?.get(i) ?? 1, // M4：真菌加速分解（缺省基线 1）
     });
     const biome = classifyBiome(
       {
@@ -246,6 +257,7 @@ interface AnimalWork {
  */
 export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot {
   const species = loadSpeciesDefinitions();
+  const pathogens = loadPathogenDefinitions();
   const edges = loadFoodwebEdges();
 
   // ── 步骤 1：读时间与随机种子（rng 由调用方注入；randomState 于步骤 12 提交） ──
@@ -258,7 +270,15 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
 
   // ── 步骤 2–4：太阳/季节/天气 → 温度/降水/水文 → 土壤/营养 ──
   const flow = flowFor(prev.cells);
-  const cells = stepEnvironment(prev.cells, flow, day, rng); // 全新中间对象，可安全写
+  // M4：真菌活性（prev 分解者生物量 → E5 分解乘子，双缓冲滞后一拍）
+  const fungiActivityByCell = new Map<number, number>();
+  for (const p of prev.populations) {
+    const d = species.get(p.speciesId);
+    if (d?.simulationTier === 'field' && d.roles.decomposer >= 0.5) {
+      fungiActivityByCell.set(idx(p.cellId.x, p.cellId.y), fungiActivityFromBiomass(p.biomass));
+    }
+  }
+  const cells = stepEnvironment(prev.cells, flow, day, rng, fungiActivityByCell); // 全新中间对象，可安全写
   for (const c of cells) c.productivity = 0;
 
   const defOf = (p: PopulationState): SpeciesDefinition | undefined => species.get(p.speciesId);
@@ -282,6 +302,21 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     if (!def) { nextPops.push(p); continue; }
     const i = idx(p.cellId.x, p.cellId.y);
     const c = cells[i] as Cell;
+
+    // M4：分解真菌（§15.4 saprotroph，非光合）——同化有机质建生物量，驱动 E5 分解
+    if (def.roles.decomposer >= 0.5) {
+      const f = stepFungus({
+        biomass: p.biomass,
+        organicMatter: c.organicMatter,
+        temperature: c.temperature,
+        soilMoisture: c.soilMoisture,
+      });
+      const maxB = def.physiology.maxBiomass ?? Infinity;
+      c.organicMatter = f.organicMatter + f.deadC; // 死亡菌体回有机质
+      nextPops.push({ ...p, count: 0, biomass: Math.min(f.biomass, maxB) });
+      continue;
+    }
+
     const solar = solarInput(c.latitude, day);
     const seasonFactor = clamp01((solar - 0.35) / 1.3); // @non-frozen：E1 → 0..1 物候
     const maxB = def.physiology.maxBiomass ?? 0;
@@ -426,7 +461,49 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     });
   }
 
-  // ── 步骤 8：疾病与寄生网络（M4 占位，位置保留；infectionState 原样携带） ──
+  // ── 步骤 8：疾病与寄生网络（D1 SIR，M4；高密度更易传播） ──
+  // 每动物种群每病原一步 SIR；密度因子=count/threshold（阈值即流行 tipping point），
+  // 环境因子=湿度/温度×存活能力；传播邻域 contact=本地，air/water/vector/food=本地+六边形邻居贡献。
+  // 疾病死亡（mortalityRate·I）于步骤 9 直接移除（与捕食移除一致，避免 B5 重复计死）。
+  // 宿主跳转 hostJumpPotential 为 §8 稀有事件，归 M6 事件系统（Q11 注记）。
+  const diseaseWork = new Map<string, { infState: Record<string, number>; recState: Record<string, number>; deathFraction: number }>();
+  for (const p of animals) {
+    const def = defOf(p);
+    if (!def || p.count <= 0) continue;
+    const key = popKey(p);
+    const c = cells[idx(p.cellId.x, p.cellId.y)] as Cell;
+    const infState: Record<string, number> = { ...(p.infectionState ?? {}) };
+    const recState: Record<string, number> = { ...(p.recoveredState ?? {}) };
+    let deathFraction = 0;
+    for (const [pid, path] of pathogens) {
+      if (!path.hostSpecies.includes(p.speciesId)) continue;
+      const I = clamp01(infState[pid] ?? 0);
+      const R = clamp01(recState[pid] ?? 0);
+      const S = clamp01(1 - I - R);
+      let exposure = I;
+      if (path.transmissionMode !== 'contact') {
+        for (const nb of c.neighbors) {
+          const np = (animalsByCell.get(idx(nb.x, nb.y)) ?? []).find((q) => q.speciesId === p.speciesId);
+          if (np) exposure += NEIGHBOR_EXPOSURE_WEIGHT * clamp01((np.infectionState ?? {})[pid] ?? 0);
+        }
+      }
+      const sir = stepSIR({
+        susceptible: S,
+        infected: I,
+        recovered: R,
+        exposure,
+        transmissionRate: path.transmissionRate,
+        recoveryRate: path.recoveryRate,
+        mortalityRate: path.mortalityRate,
+        densityFactor: transmissionDensityFactor(p.count, path.densityThreshold),
+        environmentalFactor: pathogenEnvironmentalFactor(c.humidity, c.temperature, path.environmentalPersistence),
+      });
+      infState[pid] = sir.infected;
+      recState[pid] = sir.recovered;
+      deathFraction += sir.deaths;
+    }
+    diseaseWork.set(key, { infState, recState, deathFraction: clamp01(deathFraction) });
+  }
 
   // ── 步骤 9：繁殖、死亡、遗传、迁徙（遗传/迁徙 M3；B4+B5） ──
   const mortality = rng.fork('sim:scheduler:mortality');
@@ -446,7 +523,12 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     if (!def || !w) { nextPops.push(p); continue; }
     const i = idx(p.cellId.x, p.cellId.y);
     const c = cells[i] as Cell;
-    const base = animalBase.get(key) ?? 0;
+    // M4：疾病死亡（步骤 8 SIR mortalityRate·I）直接移除，与捕食移除一致
+    const dw = diseaseWork.get(key);
+    const deathFraction = dw?.deathFraction ?? 0;
+    const afterPredation = animalBase.get(key) ?? 0;
+    const diseaseDeaths = afterPredation * deathFraction;
+    const base = afterPredation - diseaseDeaths;
 
     // 环境容纳量（派生缓存 @non-frozen：草食=植物能量窗口，肉食=猎物比例）
     let cc = 0;
@@ -499,7 +581,7 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
           def.resources.minimumDailyEnergy,
           def.physiology.reserveMaxDays ?? RESERVE_MAX_DAYS,
         ),
-        disease: 1, // M4 接线
+        disease: 1, // 疾病死亡已在步骤 8/9 直接移除（避免重复计死）；非致死 morbidity 后续
         predation: 1, // 捕食移除已直接应用；非消费性恐惧效应后续里程碑
         climate: climateMod,
         randomMortality,
@@ -520,8 +602,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
       ? { juvenile: j / sum, adult: a / sum, old: o / sum }
       : { juvenile: 0.2, adult: 0.7, old: 0.1 };
 
-    // 尸体/粪便 → 死亡有机质（步骤 6 路由，步骤 12 提交）
-    const carcass = r.deaths * def.physiology.bodyMass * CARBON_FRACTION
+    // 尸体/粪便 → 死亡有机质（步骤 6 路由，步骤 12 提交）；含疾病死亡（M4）
+    const carcass = (r.deaths + diseaseDeaths) * def.physiology.bodyMass * CARBON_FRACTION
       + (consumedByPrey.get(key) ?? 0) * def.physiology.bodyMass * CARBON_FRACTION * (1 - ASSIMILATION_CARN);
     c.organicMatter += carcass * DETRITUS_FRACTION;
 
@@ -533,6 +615,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
         ageStructure,
         energyReserve: w.reserveNext,
         health: w.healthNext,
+        infectionState: dw?.infState ?? p.infectionState ?? {},
+        recoveredState: dw?.recState ?? p.recoveredState ?? {},
       });
     }
     // r.population = 0 → 局部灭绝（再定殖靠下方 B9 迁徙）
