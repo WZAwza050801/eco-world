@@ -56,7 +56,7 @@
     "competitionCoefficients": { "deer": 0.6 }
   },
   "genetics": {
-    "heritableTraits": ["bodyMass", "litterSize"],
+    "heritableTraits": ["bodyMass", "litterSize", "coldTolerance"],
     "mutationRate": 0.002
   },
   "disease": {

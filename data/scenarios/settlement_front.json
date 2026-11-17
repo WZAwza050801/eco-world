@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "name": "定殖前沿与海洋屏障（M3 演示场景）",
+    "contract": "docs/00-design-contract.md §16 M3 验收：物种只在适生区定居；§18.1 迁徙有边界和成本",
+    "note": "8×8：x=4 整列海洋（拓扑隔离右侧）；y<4 适生（lat 5）；y≥4 冷区（lat 75，冬季硬致死）。左侧适生区投放草/兔/狼（兔狼仅 x0-1，x2-3 留空观察定殖）；左侧冷区投放草/兔观察清除；右侧完全无源。与 sim/test/dispersal.test.ts 同构。"
+  },
+  "seed": 20261116,
+  "width": 8,
+  "height": 8,
+  "ticks": 730,
+  "regions": [
+    {
+      "x0": 0, "y0": 0, "x1": 7, "y1": 3,
+      "overrides": {
+        "latitude": 5, "elevation": 50, "slope": 0, "aspect": 0,
+        "terrainType": "plain", "landWaterFraction": 0, "coastDistance": 0,
+        "salinity": 0.1, "soilMoisture": 150, "nutrients": 300, "organicMatter": 500,
+        "surfaceWater": 0, "groundwater": 0, "accessibility": 1
+      }
+    },
+    {
+      "x0": 0, "y0": 4, "x1": 7, "y1": 7,
+      "overrides": {
+        "latitude": 75, "elevation": 50, "slope": 0, "aspect": 0,
+        "terrainType": "plain", "landWaterFraction": 0, "coastDistance": 0,
+        "salinity": 0.1, "soilMoisture": 150, "nutrients": 300, "organicMatter": 500,
+        "surfaceWater": 0, "groundwater": 0, "accessibility": 1
+      }
+    },
+    {
+      "x0": 4, "y0": 0, "x1": 4, "y1": 7,
+      "overrides": {
+        "elevation": -5, "landWaterFraction": 1, "terrainType": "ocean",
+        "accessibility": 0.2, "salinity": 35, "latitude": 5,
+        "soilMoisture": 0, "surfaceWater": 1000, "nutrients": 50,
+        "organicMatter": 0, "coastDistance": 0
+      }
+    }
+  ],
+  "populations": [
+    { "speciesId": "grass_c3", "biomass": 1500, "all": true, "where": { "x0": 0, "y0": 0, "x1": 3, "y1": 3 } },
+    { "speciesId": "rabbit", "count": 120, "all": true, "where": { "x0": 0, "y0": 0, "x1": 1, "y1": 3 } },
+    { "speciesId": "wolf", "count": 2, "all": true, "where": { "x0": 0, "y0": 0, "x1": 1, "y1": 3 } },
+    { "speciesId": "grass_c3", "biomass": 800, "all": true, "where": { "x0": 0, "y0": 5, "x1": 3, "y1": 7 } },
+    { "speciesId": "rabbit", "count": 50, "all": true, "where": { "x0": 0, "y0": 5, "x1": 3, "y1": 7 } }
+  ],
+  "report": [
+    { "name": "suitable_left", "x0": 0, "y0": 0, "x1": 3, "y1": 3 },
+    { "name": "cold_left", "x0": 0, "y0": 4, "x1": 3, "y1": 7 },
+    { "name": "isolated_right", "x0": 5, "y0": 0, "x1": 7, "y1": 7 }
+  ]
+}

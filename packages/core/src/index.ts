@@ -18,3 +18,5 @@ export * from './biology/photosynthesis.js';
 export * from './biology/population.js';
 export * from './biology/predation.js';
 export * from './biology/competition.js';
+export * from './biology/fitness.js';
+export * from './biology/dispersal.js';

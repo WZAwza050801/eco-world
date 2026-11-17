@@ -57,7 +57,7 @@
     "competitionCoefficients": {}
   },
   "genetics": {
-    "heritableTraits": ["bodyMass", "packSize"],
+    "heritableTraits": ["bodyMass", "packSize", "coldTolerance"],
     "mutationRate": 0.0005
   },
   "disease": {

@@ -6,9 +6,12 @@
  * 场景 JSON（@non-frozen schema）：
  *   { seed, width?, height?, ticks?,
  *     overrides?: {Cell 字段覆盖，均匀生境演示/测试用},
- *     populations: [{speciesId, x, y, count?, biomass?} | {speciesId, all:true, ...}] }
- *   all:true 表示向全部 cell 投放（脚本展开为逐 cell 种子）。
- * 输出：JSON lines 时间序列（每 every tick 一行：各物种总 count/biomass）。
+ *     regions?: [{x0,y0,x1,y1,overrides}]  // 按序 applied（后覆盖前），M3 空间生境
+ *     populations: [{speciesId, x, y, count?, biomass?}
+ *                   | {speciesId, all:true, where?:{x0,y0,x1,y1}, ...}]
+ *     report?: [{name,x0,y0,x1,y1}] }      // 分区报告（M3 定殖/清除观察）
+ *   all:true 表示向全部（或 where 范围内）cell 投放。
+ * 输出：JSON lines 时间序列（每 every tick 一行：全局各物种总 count/biomass + 分区）。
  * 重放语义：每 tick 从快照 randomState 恢复随机流（契约 §10.5）。
  */
 import { readFileSync } from 'node:fs';
@@ -35,19 +38,27 @@ let world = generateWorld({ seed: sc.seed ?? 20261116, width: sc.width, height: 
 if (sc.overrides) {
   world = { ...world, cells: world.cells.map((c) => ({ ...c, ...sc.overrides })) };
 }
+const inBox = (c, b) => c.id.x >= b.x0 && c.id.x <= b.x1 && c.id.y >= b.y0 && c.id.y <= b.y1;
+for (const r of sc.regions ?? []) {
+  world = { ...world, cells: world.cells.map((c) => (inBox(c, r) ? { ...c, ...r.overrides } : c)) };
+}
 const seeds = [];
 for (const p of sc.populations ?? []) {
   if (p.all) {
-    for (const c of world.cells) seeds.push({ ...p, all: undefined, x: c.id.x, y: c.id.y });
+    for (const c of world.cells) {
+      if (p.where && !inBox(c, p.where)) continue;
+      seeds.push({ ...p, all: undefined, where: undefined, x: c.id.x, y: c.id.y });
+    }
   } else {
     seeds.push(p);
   }
 }
 world = seedPopulations(world, seeds);
 
-const totals = (w) => {
+const totals = (w, box) => {
   const t = {};
   for (const p of w.populations) {
+    if (box && !inBox({ id: p.cellId }, box)) continue;
     const e = (t[p.speciesId] ??= { count: 0, biomass: 0 });
     e.count += p.count;
     e.biomass += p.biomass;
@@ -58,12 +69,20 @@ const totals = (w) => {
   }
   return t;
 };
+const snapshotLine = (w, tick) => {
+  const line = { tick, ...totals(w) };
+  if (sc.report) {
+    line.regions = {};
+    for (const r of sc.report) line.regions[r.name] = totals(w, r);
+  }
+  return JSON.stringify(line);
+};
 
-console.log(JSON.stringify({ tick: 0, ...totals(world) }));
+console.log(snapshotLine(world, 0));
 for (let t = 1; t <= ticks; t++) {
   const rng = RandomStream.fromSerialized(world.randomState);
   world = stepWorld(world, rng);
   if (t % every === 0 || t === ticks) {
-    console.log(JSON.stringify({ tick: t, ...totals(world) }));
+    console.log(snapshotLine(world, t));
   }
 }

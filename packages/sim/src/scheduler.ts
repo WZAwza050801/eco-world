@@ -1,7 +1,9 @@
 /**
  * 调度器（契约 §14.7 冻结签名；§9.2 冻结更新顺序，不可改变）。
  * M1：步骤 2–4（stepEnvironment：气候/水文/土壤，E1–E6）。
- * M2：stepWorld 填充步骤 1–7、9、12（B1–B7 植物-草食-捕食闭环）；
+ * M2：stepWorld 填充步骤 1–7、9、12（B1–B7 植物-草食-捕食闭环）。
+ * M3：步骤 9 续接遗传（Lande 方程，§9.1 十年代尺度）与迁徙扩散（B9，
+ *     两阶段流量计算；硬致死带清除不适生种群，空适生格可定殖）；
  *     步骤 8（疾病 M4）、10（智人 M5）、11（事件因果 M6）为显式占位，位置保留。
  *
  * §9.3 双缓冲解释：不修改 prev 快照对象；管线内下游步骤读上游步骤产出的
@@ -37,9 +39,33 @@ import {
   RESERVE_MAX_DAYS,
   starvationModifier,
   stepPopulation,
+  traitMutationDelta,
+  traitSelectionDelta,
 } from '../../core/src/biology/population.js';
 import { herbivory, holling2 } from '../../core/src/biology/predation.js';
 import { effectiveResource } from '../../core/src/biology/competition.js';
+import {
+  effectiveEnvironment,
+  fitness as multiplicativeFitness,
+  fitnessStressModifier,
+  habitatFitness,
+  rangeSuitability,
+  TRAIT_MEAN_BOUND,
+  TRAIT_RANGE_MAP,
+  WATER_HARD_MARGIN_MM,
+  WATER_SOFT_WIDTH_MM,
+} from '../../core/src/biology/fitness.js';
+import {
+  dispersalFlow,
+  dispersalRandomFactor,
+  establishment,
+  MAX_EMIGRATION_FRACTION,
+  migrationCapacity,
+  migrationCost,
+  movementPressure,
+  suitabilityGradient,
+  targetAccessibility,
+} from '../../core/src/biology/dispersal.js';
 import {
   loadBiomeRules,
   loadFoodwebEdges,
@@ -96,6 +122,22 @@ const DEFAULT_MAINTENANCE_RESPIRATION = 0.01;
 const DEFAULT_ANIMAL_ENERGY_DENSITY = 7000;
 /** 植物能量密度缺省 kJ/kgC */
 const DEFAULT_PLANT_ENERGY_DENSITY = 17000;
+
+// ───────────────── @non-frozen M3 实现常量（Q10，M8 可调） ─────────────────
+
+/** 植物每 tick 种子分配比例（占生物量，B9 seed 模板的繁殖成本） */
+const SEED_ALLOC_FRACTION = 0.02;
+/** 种子到达后的定殖成功率（再乘目标生境适合度） */
+const SEED_ESTABLISH_RATE = 0.5;
+/** 动物最小定殖量 ind（低于且无居民种群 → 不定殖，避免僵尸种群；慢扩散者如狼也能逐步定殖） */
+const MIN_ESTABLISH_IND = 0.01;
+/** 植物最小定殖量 kgC */
+const MIN_SEED_ESTABLISH_KGC = 0.01;
+/** 食物适合度半饱和：草食者 kgC/cell，肉食者 prey ind/cell */
+const FOOD_SAT_KGC = 500;
+const PREY_SAT_IND = 50;
+/** 迁徙者年龄结构（成年偏置，@non-frozen） */
+const MIGRANT_AGE = { juvenile: 0.1, adult: 0.8, old: 0.1 };
 
 // ───────────────── 流向缓存（契约 E4：不逐 tick 重算） ─────────────────
 
@@ -430,6 +472,14 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     const sigma = MICRO_MORTALITY_SIGMA;
     const randomMortality = Math.exp(sigma * mortality.nextGaussian() - (sigma * sigma) / 2);
 
+    // M3：性状平移后的有效适生范围（遗传→存活耦合）；气候胁迫含温度+水分，硬致死带清除不适生种群
+    const effEnv = effectiveEnvironment(def, p.traitMeans ?? {});
+    const waterStress = rangeSuitability(c.soilMoisture, effEnv.water, WATER_SOFT_WIDTH_MM, WATER_HARD_MARGIN_MM);
+    const climateMod = Math.max(
+      climateStressModifier(c.temperature, effEnv.temperature),
+      fitnessStressModifier(waterStress.suitability, waterStress.hardConstraint),
+    );
+
     const r = stepPopulation({
       population: base,
       adults: base * p.ageStructure.adult,
@@ -450,8 +500,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
           def.physiology.reserveMaxDays ?? RESERVE_MAX_DAYS,
         ),
         disease: 1, // M4 接线
-        predation: 1, // 捕食移除已直接应用；非消费性恐惧效应 M3+
-        climate: climateStressModifier(c.temperature, def.environment.temperature),
+        predation: 1, // 捕食移除已直接应用；非消费性恐惧效应后续里程碑
+        climate: climateMod,
         randomMortality,
       },
     });
@@ -485,16 +535,213 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
         health: w.healthNext,
       });
     }
-    // r.population = 0 → 局部灭绝（再定殖靠 M3 迁徙）
+    // r.population = 0 → 局部灭绝（再定殖靠下方 B9 迁徙）
   }
+
+  // 规范化为全新对象（双缓冲：后续遗传/扩散原地写不触及 prev 共享引用）
+  let finalPops: PopulationState[] = nextPops.map((p) => ({ ...p }));
+
+  // ── 步骤 9（续）：遗传（§9.2 顺序在迁徙之前；§9.1 decade/century 尺度） ──
+  // Lande 方程 Δmean = h²σ²β（β 为性状→生境适合度的数值选择梯度）+ 突变微扰。
+  const geneticsRng = rng.fork('core:biology:genetics');
+  for (const p of finalPops) {
+    const def = defOf(p);
+    if (!def) continue;
+    const traits = def.genetics?.heritableTraits ?? [];
+    if (traits.length === 0) continue;
+    const c = cells[idx(p.cellId.x, p.cellId.y)] as Cell;
+    const means = { ...p.traitMeans };
+    const variances = { ...p.traitVariance };
+    const generationDays = Math.max(1, def.lifeHistory.reproductiveIntervalYears * WORLD.DAYS_PER_YEAR);
+    for (const trait of traits) {
+      let delta = 0;
+      if (TRAIT_RANGE_MAP[trait]) {
+        const eps = 0.5;
+        const plus = { ...means, [trait]: (means[trait] ?? 0) + eps };
+        const minus = { ...means, [trait]: (means[trait] ?? 0) - eps };
+        const gradient =
+          (habitatFitness(def, c.temperature, c.soilMoisture, plus) -
+            habitatFitness(def, c.temperature, c.soilMoisture, minus)) / (2 * eps);
+        delta = traitSelectionDelta(gradient, variances[trait] ?? 1, generationDays);
+      }
+      const mutation = traitMutationDelta(geneticsRng.nextGaussian(), def.genetics.mutationRate, generationDays);
+      means[trait] = clamp((means[trait] ?? 0) + delta + mutation, -TRAIT_MEAN_BOUND, TRAIT_MEAN_BOUND);
+      variances[trait] = variances[trait] ?? 1;
+    }
+    p.traitMeans = means;
+    p.traitVariance = variances;
+  }
+
+  // ── 步骤 9（续）：迁徙/扩散（B9；两阶段：先按繁殖后状态算全部流量，再统一应用） ──
+  const dispersalRng = rng.fork('core:biology:dispersal');
+  const popAt = new Map<string, PopulationState>();
+  for (const p of finalPops) popAt.set(popKey(p), p);
+  const cellXY = (i: number): [number, number] => [i % W, Math.floor(i / W)];
+  const foodSuitAt = (def: SpeciesDefinition, i: number): number => {
+    if (def.simulationTier === 'field') return 1;
+    const [x, y] = cellXY(i);
+    let sat = 0;
+    for (const foodId of def.resources.foodSources) {
+      const fd = species.get(foodId);
+      if (!fd) continue;
+      const q = popAt.get(`${foodId}@${x},${y}`);
+      if (fd.simulationTier === 'field') sat = Math.max(sat, clamp01((q?.biomass ?? 0) / FOOD_SAT_KGC));
+      else sat = Math.max(sat, clamp01((q?.count ?? 0) / PREY_SAT_IND));
+    }
+    return sat;
+  };
+  interface Transfer {
+    speciesId: string;
+    toKey: string;
+    toIdx: number;
+    amount: number;
+    reserve: number;
+    health: number;
+    means: Record<string, number>;
+    variances: Record<string, number>;
+    isPlant: boolean;
+  }
+  const transfers: Transfer[] = [];
+  const outflow = new Map<string, number>();
+  for (const p of finalPops) {
+    const def = defOf(p);
+    if (!def) continue;
+    const isPlant = def.simulationTier === 'field';
+    const standing = isPlant ? p.biomass : p.count;
+    if (standing <= 0) continue;
+    const i = idx(p.cellId.x, p.cellId.y);
+    const c = cells[i] as Cell;
+    const habI = habitatFitness(def, c.temperature, c.soilMoisture, p.traitMeans);
+    // B8 全适合度（环境×食物×氧气；疾病/竞争/捕食修正 M4+ 接线）驱动迁移压力
+    const fullI = isPlant ? habI : multiplicativeFitness(habI, [foodSuitAt(def, i), clamp01(c.oxygen)]);
+    const cc = c.carryingCapacity[p.speciesId] ?? 0;
+    const pressure = movementPressure(standing, cc, fullI);
+    const capacity = migrationCapacity(def.movement.speedKmPerDay);
+    const sourcePool = isPlant ? p.biomass * SEED_ALLOC_FRACTION : p.count;
+    const raw: Array<{ j: number; x: number; y: number; flow: number; habJ: number }> = [];
+    for (const nb of c.neighbors) {
+      const j = idx(nb.x, nb.y);
+      const cj = cells[j] as Cell;
+      const access = targetAccessibility(def.movement.dispersalMethod, cj);
+      if (access <= 0) continue; // 冻结边界：目标 accessibility 必须 > 0（步行/种子不跨海）
+      const target = popAt.get(`${p.speciesId}@${nb.x},${nb.y}`);
+      const isOccupied = target ? (isPlant ? target.biomass > 0 : target.count > 0) : false;
+      const habJ = habitatFitness(def, cj.temperature, cj.soilMoisture, p.traitMeans);
+      const grad = suitabilityGradient(habI, habJ, isOccupied);
+      if (grad <= 0) continue;
+      const rf = dispersalRandomFactor(dispersalRng.nextGaussian());
+      const flow = dispersalFlow(sourcePool, pressure, grad, access, capacity, rf);
+      if (flow > 1e-12) raw.push({ j, x: nb.x, y: nb.y, flow, habJ });
+    }
+    const total = raw.reduce((s, r) => s + r.flow, 0);
+    const cap = sourcePool * MAX_EMIGRATION_FRACTION;
+    const scale = total > cap && total > 0 ? cap / total : 1;
+    for (const r of raw) {
+      const flow = r.flow * scale;
+      let settled = establishment(flow, r.habJ);
+      if (isPlant) settled *= SEED_ESTABLISH_RATE;
+      const target = popAt.get(`${p.speciesId}@${r.x},${r.y}`);
+      const minUnit = isPlant ? MIN_SEED_ESTABLISH_KGC : MIN_ESTABLISH_IND;
+      outflow.set(popKey(p), (outflow.get(popKey(p)) ?? 0) + flow);
+      if (!target && settled < minUnit) {
+        // 低于定殖阈值且无居民种群：全部损失为碎屑（避免僵尸种群）
+        const deadKgC = isPlant ? flow : flow * def.physiology.bodyMass * CARBON_FRACTION;
+        (cells[r.j] as Cell).organicMatter += deadKgC * DETRITUS_FRACTION;
+        continue;
+      }
+      const failed = flow - settled; // 定殖失败 = 迁徙死亡（成本，§18.1）
+      if (failed > 0) {
+        const deadKgC = isPlant ? failed : failed * def.physiology.bodyMass * CARBON_FRACTION;
+        (cells[r.j] as Cell).organicMatter += deadKgC * DETRITUS_FRACTION;
+      }
+      transfers.push({
+        speciesId: p.speciesId,
+        toKey: `${p.speciesId}@${r.x},${r.y}`,
+        toIdx: r.j,
+        amount: settled,
+        reserve: Math.max(0, p.energyReserve - migrationCost(def.physiology.bodyMass)),
+        health: p.health,
+        means: { ...p.traitMeans },
+        variances: { ...p.traitVariance },
+        isPlant,
+      });
+    }
+  }
+  // 应用：源种群扣减外迁
+  for (const p of finalPops) {
+    const out = outflow.get(popKey(p)) ?? 0;
+    if (out <= 0) continue;
+    const def = defOf(p);
+    if (def?.simulationTier === 'field') {
+      p.biomass = Math.max(0, p.biomass - out);
+    } else {
+      p.count = Math.max(0, p.count - out);
+      p.biomass = p.count * (def?.physiology.bodyMass ?? 0) * CARBON_FRACTION;
+    }
+  }
+  // 应用：目标合并/新建（基因流按数量加权混合）
+  for (const t of transfers) {
+    const def = species.get(t.speciesId);
+    if (!def) continue;
+    const existing = popAt.get(t.toKey);
+    if (existing) {
+      if (t.isPlant) {
+        existing.biomass += t.amount;
+      } else {
+        const n0 = existing.count;
+        const n1 = t.amount;
+        const n = n0 + n1;
+        if (n > 0) {
+          existing.energyReserve = (existing.energyReserve * n0 + t.reserve * n1) / n;
+          existing.health = (existing.health * n0 + t.health * n1) / n;
+          existing.ageStructure = {
+            juvenile: (existing.ageStructure.juvenile * n0 + MIGRANT_AGE.juvenile * n1) / n,
+            adult: (existing.ageStructure.adult * n0 + MIGRANT_AGE.adult * n1) / n,
+            old: (existing.ageStructure.old * n0 + MIGRANT_AGE.old * n1) / n,
+          };
+          const mixed = { ...existing.traitMeans };
+          for (const trait of Object.keys(t.means)) {
+            mixed[trait] = ((existing.traitMeans[trait] ?? 0) * n0 + (t.means[trait] ?? 0) * n1) / n;
+          }
+          existing.traitMeans = mixed;
+        }
+        existing.count = n;
+        existing.biomass = n * def.physiology.bodyMass * CARBON_FRACTION;
+      }
+    } else {
+      const [x, y] = cellXY(t.toIdx);
+      const created: PopulationState = {
+        speciesId: t.speciesId,
+        cellId: { x, y },
+        count: t.isPlant ? 0 : t.amount,
+        biomass: t.isPlant ? t.amount : t.amount * def.physiology.bodyMass * CARBON_FRACTION,
+        ageStructure: t.isPlant ? { juvenile: 0.2, adult: 0.7, old: 0.1 } : { ...MIGRANT_AGE },
+        energyReserve: t.isPlant ? 0 : t.reserve,
+        health: t.health,
+        infectionState: {},
+        traitMeans: { ...t.means },
+        traitVariance: { ...t.variances },
+      };
+      finalPops.push(created);
+      popAt.set(t.toKey, created);
+    }
+  }
+  // 局部灭绝清理（动物 count ≤ 0 移除；植物保留 0 生物量作再生基础，M2 约定）
+  finalPops = finalPops.filter((p) => defOf(p)?.simulationTier === 'field' || p.count > 0);
 
   // ── 步骤 10：人类聚落与土地利用（M5 占位，位置保留） ──
   // ── 步骤 11：生成事件与因果记录（M6 占位，位置保留） ──
   // TODO(M6): 截断/饥饿/灭绝/捕食崩溃等事件与因果链（events.ts）
 
-  // ── 步骤 12：统计、缓存、前端快照 ──
+  // ── 步骤 12：统计、缓存、前端快照（按遗传/扩散后的最终状态重算） ──
+  const plantBiomassFinal = new Map<string, number>();
+  const animalCountFinal = new Map<string, number>();
+  for (const p of finalPops) {
+    if (defOf(p)?.simulationTier === 'field') plantBiomassFinal.set(popKey(p), p.biomass);
+    else animalCountFinal.set(popKey(p), p.count);
+  }
   for (const c of cells) c.carryingCapacity = {};
-  for (const p of nextPops) {
+  for (const p of finalPops) {
     const def = defOf(p);
     if (!def) continue;
     const c = cells[idx(p.cellId.x, p.cellId.y)] as Cell;
@@ -507,11 +754,11 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
       const foodDef = species.get(foodId);
       if (!foodDef) continue;
       if (foodDef.simulationTier === 'field') {
-        const b = plantBiomassNext.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0;
+        const b = plantBiomassFinal.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0;
         const energy = foodDef.resources.energyDensity ?? DEFAULT_PLANT_ENERGY_DENSITY;
         cc += (b * energy) / (Math.max(1, def.resources.minimumDailyEnergy) * CC_WINDOW_DAYS);
       } else {
-        cc += (animalBase.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0) * PREDATOR_PREY_RATIO;
+        cc += (animalCountFinal.get(`${foodId}@${p.cellId.x},${p.cellId.y}`) ?? 0) * PREDATOR_PREY_RATIO;
       }
     }
     c.carryingCapacity[p.speciesId] = cc;
@@ -523,7 +770,7 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     time: timeNext,
     season: seasonNext,
     cells,
-    populations: nextPops,
+    populations: finalPops,
     agents: prev.agents,
     interactions: prev.interactions,
     events: prev.events,

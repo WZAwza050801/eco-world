@@ -55,7 +55,7 @@
   },
   "movement": {
     "dispersalMethod": "seed",
-    "speedKmPerDay": 0.5,
+    "speedKmPerDay": 2,
     "pattern": "diffusive"
   },
   "interactions": {

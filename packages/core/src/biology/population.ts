@@ -17,6 +17,12 @@
  */
 import { BIOLOGY } from '../constants.js';
 import type { Range } from '../types.js';
+import {
+  fitnessStressModifier,
+  rangeSuitability,
+  TEMP_HARD_MARGIN_C,
+  TEMP_SOFT_WIDTH_C,
+} from './fitness.js';
 
 const clamp = (x: number, lo: number, hi: number): number =>
   x < lo ? lo : x > hi ? hi : x;
@@ -30,10 +36,7 @@ export const CARBON_FRACTION = 0.2;
 export const STARVATION_EXP = 3;
 /** @non-frozen（Q9）：饥饿死亡乘子上限 */
 export const STARVATION_MAX = 20;
-/** @non-frozen（Q9）：气候胁迫死亡乘子系数 */
-export const CLIMATE_STRESS_K = 5;
-/** @non-frozen（Q9）：超出适生温度范围的线性耐受宽度 °C */
-export const CLIMATE_TOLERANCE_C = 10;
+// 气候胁迫常量（CLIMATE_STRESS_K / 软耐受宽度 / 硬致死边际）自 M3 起统一在 fitness.ts（Q10）。
 
 export interface PopulationInput {
   population: number;
@@ -83,13 +86,13 @@ export function starvationModifier(
 }
 
 /**
- * B5 气候胁迫修正（@non-frozen Q9）：适生范围内 1；范围外按线性耐受下降，
- * 死亡乘子 = 1 + CLIMATE_STRESS_K·(1−suitability)。硬致死（suitability=0）→ 乘子 6。
+ * B5 气候胁迫修正（M3 升级，Q10）：委托 B8 宽容函数——
+ * 适生范围内 1；软耐受带 1 + K·(1−suitability)；
+ * 超出硬致死边际（hard_constraint，契约 B8）→ HARD_LETHAL_MULT（快速清除不适生种群）。
  */
 export function climateStressModifier(temperature: number, range: Range): number {
-  const d = temperature < range.min ? range.min - temperature : temperature > range.max ? temperature - range.max : 0;
-  const suitability = clamp01(1 - d / CLIMATE_TOLERANCE_C);
-  return 1 + CLIMATE_STRESS_K * (1 - suitability);
+  const s = rangeSuitability(temperature, range, TEMP_SOFT_WIDTH_C, TEMP_HARD_MARGIN_C);
+  return fitnessStressModifier(s.suitability, s.hardConstraint);
 }
 
 /** B4 + B5：一步差分更新，保证非负 */
@@ -120,4 +123,33 @@ export function stepPopulation(input: PopulationInput): {
   const deaths = clamp(rawDeaths, 0, population);
 
   return { population: Math.max(0, population + births - deaths), births, deaths };
+}
+
+// ───────────────────────── 遗传性状（M3，§9.1 十年代尺度） ─────────────────────────
+
+/** @non-frozen（Q10）：狭义遗传力 h²（Lande 方程） */
+export const HERITABILITY_DEFAULT = 0.3;
+/** @non-frozen（Q10）：突变标准差尺度（性状单位/世代） */
+export const MUTATION_SD = 0.1;
+
+/**
+ * 数量遗传 Lande 方程：Δmean = h²·σ²·β（选择梯度），每世代一步。
+ * 每 tick 变化 = 世代变化/世代天数（generationDays 由物种
+ * lifeHistory.reproductiveIntervalYears×365 给出，@non-frozen Q10 时间尺度映射；
+ * 兔 ~36 天/世代 → 演化快，草/狼 ~365 天/世代 → §9.1 decade 尺度）。
+ */
+export function traitSelectionDelta(
+  selectionGradient: number,
+  traitVariance: number,
+  generationDays: number,
+  heritability = HERITABILITY_DEFAULT,
+): number {
+  return (
+    clamp01(heritability) * Math.max(0, traitVariance) * selectionGradient / Math.max(1, generationDays)
+  );
+}
+
+/** 每 tick 突变微扰（§8.1 微观随机；gaussian 来自 fork('core:biology:genetics')） */
+export function traitMutationDelta(gaussian: number, mutationRate: number, generationDays: number): number {
+  return (gaussian * Math.max(0, mutationRate) * MUTATION_SD) / Math.max(1, generationDays);
 }

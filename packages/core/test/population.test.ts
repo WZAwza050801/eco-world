@@ -26,7 +26,32 @@ import {
   type PopulationInput,
 } from '../src/biology/population.js';
 import { effectiveResource } from '../src/biology/competition.js';
-import { BIOLOGY } from '../src/constants.js';
+import {
+  fitness,
+  rangeSuitability,
+  fitnessStressModifier,
+  habitatFitness,
+  effectiveEnvironment,
+  HARD_LETHAL_MULT,
+  TEMP_SOFT_WIDTH_C,
+  TEMP_HARD_MARGIN_C,
+} from '../src/biology/fitness.js';
+import {
+  migrationCapacity,
+  movementPressure,
+  suitabilityGradient,
+  targetAccessibility,
+  dispersalFlow,
+  establishment,
+  migrationCost,
+  EXPLORATION_BASE,
+  COLONIZATION_BONUS,
+  MAX_EMIGRATION_FRACTION,
+} from '../src/biology/dispersal.js';
+import { traitSelectionDelta, traitMutationDelta, HERITABILITY_DEFAULT } from '../src/biology/population.js';
+import type { Cell, SpeciesDefinition } from '../src/types.js';
+import { BIOLOGY, WORLD } from '../src/constants.js';
+import { RandomStream } from '../src/random/RandomStream.js';
 
 const closeTo = (actual: number, expected: number, tol = 1e-9): void => {
   assert.ok(Math.abs(actual - expected) <= tol, `期望 ${expected}，实际 ${actual}`);
@@ -139,10 +164,11 @@ test('B5: 饥饿修正——储备充足为 1，低于 STARVATION_FLOOR 指数�
   closeTo(starvationModifier(0, 0), 1); // 植物不经过饥饿路径
 });
 
-test('B5: 气候胁迫——适生范围内 1，范围外死亡乘子上升', () => {
+test('B5: 气候胁迫——适生范围内 1，软耐受带高斯衰减上升，硬致死带 HARD_LETHAL_MULT（M3/B8 hard_constraint）', () => {
   closeTo(climateStressModifier(15, { min: -10, max: 35 }), 1);
-  closeTo(climateStressModifier(-15, { min: -10, max: 35 }), 1 + 5 * 0.5);
-  closeTo(climateStressModifier(-40, { min: -10, max: 35 }), 6);
+  closeTo(climateStressModifier(-15, { min: -10, max: 35 }), 1 + 5 * (1 - Math.exp(-0.25))); // d=5, soft=10
+  closeTo(climateStressModifier(-22, { min: -10, max: 35 }), 1 + 5 * (1 - Math.exp(-1.44))); // d=12，未过硬界 15
+  closeTo(climateStressModifier(-40, { min: -10, max: 35 }), HARD_LETHAL_MULT); // 硬致死 d=30≥15
 });
 
 test('B5/§18.1: 能量不足降低存活——starvation 乘子越大死亡越多；数量永不超界/为负', () => {
@@ -177,4 +203,102 @@ test('B7: effectiveResource = R/(1+Σ coef·density)；无竞争者不变，竞�
   ]), 100 / 7);
   assert.ok(effectiveResource(100, [{ coefficient: 1, density: 100 }]) < effectiveResource(100, [{ coefficient: 1, density: 10 }]));
   closeTo(effectiveResource(-5, []), 0);
+});
+
+// ───────────────────────── M3：B8 适合度 ─────────────────────────
+
+const rabbitDef = {
+  environment: { temperature: { min: -10, max: 35 }, water: { min: 10, max: 300 }, biomes: [] },
+  genetics: { heritableTraits: ['coldTolerance', 'bodyMass'], mutationRate: 0.002 },
+} as unknown as SpeciesDefinition;
+
+test('B8: 乘法适合度（冻结实现）——因子连乘、clamp01、空数组返回 base', () => {
+  closeTo(fitness(2, [0.5, 0.5]), 0.5);
+  closeTo(fitness(1, [2, 0.5]), 0.5); // 超 1 因子截断
+  closeTo(fitness(3, []), 3);
+  closeTo(fitness(1, [-1, 0.5]), 0);
+});
+
+test('B8 宽容函数：范围内 1；高斯软衰减；硬致死带 suitability=0 + hard_constraint 标记', () => {
+  const r1 = rangeSuitability(15, { min: -10, max: 35 }, TEMP_SOFT_WIDTH_C, TEMP_HARD_MARGIN_C);
+  closeTo(r1.suitability, 1);
+  assert.equal(r1.hardConstraint, false);
+  const r2 = rangeSuitability(-15, { min: -10, max: 35 }, TEMP_SOFT_WIDTH_C, TEMP_HARD_MARGIN_C);
+  closeTo(r2.suitability, Math.exp(-0.25)); // d=5
+  assert.equal(r2.hardConstraint, false);
+  const r3 = rangeSuitability(-25, { min: -10, max: 35 }, TEMP_SOFT_WIDTH_C, TEMP_HARD_MARGIN_C);
+  closeTo(r3.suitability, 0); // d=15 = 硬界
+  assert.equal(r3.hardConstraint, true);
+  assert.equal(fitnessStressModifier(r3.suitability, r3.hardConstraint), HARD_LETHAL_MULT);
+});
+
+test('B8 性状→适生范围：coldTolerance +5 → 温度下限外扩 5°C；中性性状不动范围', () => {
+  const env = effectiveEnvironment(rabbitDef, { coldTolerance: 5, bodyMass: 3 });
+  closeTo(env.temperature.min, -15);
+  closeTo(env.temperature.max, 35);
+  closeTo(env.water.min, 10);
+  // 演化后 −14°C 变为完全适生（未演化时处于软耐受带 <1）
+  assert.equal(rangeSuitability(-14, env.temperature, TEMP_SOFT_WIDTH_C, TEMP_HARD_MARGIN_C).hardConstraint, false);
+  closeTo(habitatFitness(rabbitDef, -14, 150, { coldTolerance: 5 }), 1);
+  assert.ok(habitatFitness(rabbitDef, -14, 150, {}) < 1);
+});
+
+test('B8 生境适合度：适生 1，硬致死 0（定殖过滤的依据）', () => {
+  closeTo(habitatFitness(rabbitDef, 15, 150), 1);
+  closeTo(habitatFitness(rabbitDef, -40, 150), 0); // 温度硬致死 d=30≥15
+  closeTo(habitatFitness(rabbitDef, 15, -100), 0); // 水分硬致死 d=110≥100
+});
+
+// ───────────────────────── M3：B9 迁徙与扩散 ─────────────────────────
+
+const cellFixture = (elevation: number, accessibility: number): Cell =>
+  ({ elevation, accessibility }) as Cell;
+
+test('B9: migrationCapacity = speed/边长（clamp01）；pressure 随密度/适合度赤字上升', () => {
+  closeTo(migrationCapacity(2), 0.2);
+  closeTo(migrationCapacity(15), 1);
+  closeTo(migrationCapacity(0), 0);
+  closeTo(movementPressure(100, 1000, 1), EXPLORATION_BASE); // 健康不拥挤 → 仅探索基线
+  assert.ok(movementPressure(2000, 1000, 1) > movementPressure(100, 1000, 1)); // 拥挤外迁
+  assert.ok(movementPressure(100, 1000, 0) > movementPressure(100, 1000, 1)); // 不适生外迁
+  assert.ok(movementPressure(100, 1000, 0) <= 1);
+});
+
+test('B9: 适合度梯度只向上；空适生目标有竞争释放加成（定殖空域的关键）', () => {
+  closeTo(suitabilityGradient(0.8, 0.5, true), 0);
+  closeTo(suitabilityGradient(0.5, 0.8, true), 0.3);
+  closeTo(suitabilityGradient(1, 1, true), 0); // 等适生已占据 → 无谓 churn 为 0
+  closeTo(suitabilityGradient(1, 1, false), COLONIZATION_BONUS); // 空适生格 → 可定殖
+  closeTo(suitabilityGradient(1, 0, false), 0); // 空但不适生 → 不去
+});
+
+test('B9: 通行性——步行/种子不跨海洋（冻结边界 accessibility>0），飞行可跨', () => {
+  closeTo(targetAccessibility('walking', cellFixture(-5, 0.2)), 0);
+  closeTo(targetAccessibility('seed', cellFixture(-5, 0.2)), 0);
+  closeTo(targetAccessibility('flying', cellFixture(-5, 0.2)), 0.2);
+  closeTo(targetAccessibility('walking', cellFixture(50, 1)), 1);
+});
+
+test('B9: 流量公式与冻结边界 flow ≤ population_i；定殖过滤；迁徙成本', () => {
+  closeTo(dispersalFlow(100, 0.5, 0.4, 1, 0.2, 1), 100 * 0.5 * 0.4 * 1 * 0.2 * 1);
+  closeTo(dispersalFlow(100, 1, 1, 1, 1, 100), 100); // 边界：不超源种群
+  closeTo(dispersalFlow(100, 0, 0.5, 1, 0.2, 1), 0);
+  closeTo(establishment(10, 0.5), 5);
+  closeTo(establishment(10, 0), 0); // 硬致死目标不定殖
+  closeTo(migrationCost(1.5), 1.5 * WORLD.CELL_EDGE_KM * 2); // 兔 30 kJ
+  closeTo(migrationCost(40), 40 * WORLD.CELL_EDGE_KM * 2); // 狼 800 kJ
+  assert.ok(MAX_EMIGRATION_FRACTION <= 1);
+});
+
+// ───────────────────────── M3：遗传性状 ─────────────────────────
+
+test('遗传: Lande 方程 Δmean = h²σ²β/世代天数；方差 0 → 无选择响应；突变可复现', () => {
+  closeTo(traitSelectionDelta(0.1, 1, 36.5), (HERITABILITY_DEFAULT * 1 * 0.1) / 36.5);
+  closeTo(traitSelectionDelta(0.1, 0, 36.5), 0);
+  closeTo(traitSelectionDelta(0.1, 1, 365), (HERITABILITY_DEFAULT * 0.1) / 365); // 慢世代物种
+  const a = new RandomStream(7).fork('core:biology:genetics');
+  const b = new RandomStream(7).fork('core:biology:genetics');
+  for (let i = 0; i < 100; i++) {
+    closeTo(traitMutationDelta(a.nextGaussian(), 0.002, 36.5), traitMutationDelta(b.nextGaussian(), 0.002, 36.5));
+  }
 });

@@ -224,8 +224,9 @@ export function seedPopulations(world: WorldSnapshot, seeds: PopulationSeed[]): 
       energyReserve: s.energyReserve ?? need * reserveDays * 0.5,
       health: 0.8,
       infectionState: {},
-      traitMeans: {},
-      traitVariance: {},
+      // M3 遗传初始化（@non-frozen Q10）：耐受性状均值 0（中性）、方差 1
+      traitMeans: Object.fromEntries((def.genetics?.heritableTraits ?? []).map((t) => [t, 0])),
+      traitVariance: Object.fromEntries((def.genetics?.heritableTraits ?? []).map((t) => [t, 1])),
     });
   }
   return createWorldSnapshot({
