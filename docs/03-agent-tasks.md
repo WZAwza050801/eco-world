@@ -79,6 +79,19 @@
 - **最小修改建议**：契约 v2.2 与 Q9 合并冻结（宽容函数形状/硬边际、B9 因子定义、遗传模型与性状语义、定殖/成本规则）。
 - **决策人**：项目 owner（用户）；不阻塞 M4+。
 
+### Q11（M4 · 类型缺失/算法未指定 · 非阻塞 · 已按非冻结实现）
+- **位置与处理**（全部 `@non-frozen` 标注）：
+  1. **PathogenDefinition 未定义**：契约 §6 引用但 §3 无定义（同 Q1/Q2 先例）→ types.ts 增 `@non-frozen` 接口（id/hostSpecies/transmissionMode/transmissionRate/recoveryRate/mortalityRate/incubationPeriod/environmentalPersistence/hostJumpPotential/mutationRate/densityThreshold），按 §6/§15.5 推导；病原内容存 content/species/*.json，以 `transmissionMode` 字段与物种（`simulationTier`）判别分离（`loadPathogenDefinitions`）；
+  2. **PopulationState 缺 R 仓室**：§3.3 只有 infectionState（I），SIR 需 R → 增可选 `recoveredState?: Record<string,number>`（S=1−I−R，缺省 {}→R0）；冻结字段名未改；
+  3. **D1 离散化**（§6 连续 dI 公式）→ 显式 Euler：newInf=transmissionRate·S·exposure·densityFactor·envFactor（≤S），rec=recoveryRate·I，death=mortalityRate·I（rec+death≤I 缩放）；死亡移除质量 → S+I+R=1−deaths；
+  4. **densityFactor**（§6 高密度促进传播）= count/densityThreshold，clamp[0,10]；阈值即流行 tipping point（R0=transmissionRate·density·env/(rec+mort)）；**environmentalFactor** = persistence·clamp01(humidity/0.5)·clamp01((T+10)/40)；
+  5. **传播邻域**（transmissionMode）：contact=本地 I；air/water/vector/food=本地+Σ六边形邻居 I·0.3（NEIGHBOR_EXPOSURE_WEIGHT）；
+  6. **疾病死亡接线**：mortalityRate·I 于步骤 9 直接移除（与捕食一致，B5 disease 修正保持 1 避免重复计死）；尸体→有机质；
+  7. **分解真菌**（§15.4，契约无公式编号）：`stepFungus`（soil/nutrients.ts）saprotroph——生长∝生物量×温湿适宜度×有机质饱和，同化有机质建生物量（产率 0.5），维持呼吸+死亡消耗，死菌回有机质；`fungiActivityFromBiomass`=1+biomass/100（上限 5）驱动 E5 分解乘子；scheduler 步骤 5 按 roles.decomposer≥0.5 分支（非光合）；
+  8. **宿主跳转 hostJumpPotential**（§6/§8 稀有事件）→ 归 M6 事件系统（M4 未实现，避免无宿主范围扩展的 inert 感染）；**迁徙携带感染**未实现（扩散新建种群 infectionState={}，M6 细化）。
+- **最小修改建议**：契约 v2.3 冻结 PathogenDefinition、recoveredState、D1 离散式与密度/环境因子、真菌模型。
+- **决策人**：项目 owner（用户）；不阻塞 M5+。
+
 ## 任务卡（M0 已完成）
 
 - [x] M0-1 实现 `packages/core/src/types.ts`（§3 + §8.4）
@@ -166,3 +179,22 @@
 **经验记录**：① 探针初版对 sim 网格误用方形整数坐标量支撑比 → 假偏差 1.26/1.41；改六边形 Cartesian 中心后得正确 1.1547。② 邻居正确性须独立校验（dist 图 vs 独立 axial 规则逐格对比），不能"拿 hexNeighbors 验 hexNeighbors"循环论证。③ 随机 Eden T 过长撞矩形边界会扭曲支撑比，确定性短程（半径<边界）才是干净度量。
 
 **下一步：M4（D1 疾病 + 真菌）直接在六边形上建**（疾病接触邻域只建一次）。待决：Q1/Q2、Q5/Q7、Q8、Q9/Q10。
+
+## 任务卡（M4 已完成 2026-11-16）
+
+- [x] M4-1 D1 SIR（`disease/sir.ts`：`stepSIR` 离散 Euler + `densityFactor`（count/threshold tipping point）+ `environmentalFactor`（湿度/温度×存活）；比例守恒 S+I+R=1−deaths；Q11）
+- [x] M4-2 病原类型与内容（types.ts `PathogenDefinition` @non-frozen；`virus_rabbit.json`：contact、transmissionRate 0.8、rec 0.1、mort 0.4、persistence 0.8、densityThreshold 100；`loadPathogenDefinitions` 按 transmissionMode 判别）
+- [x] M4-3 分解真菌（`soil/nutrients.ts` `stepFungus` saprotroph + `fungiActivityFromBiomass`；`decomposer_fungus.json` field 分解者；scheduler 步骤 5 decomposer 分支、步骤 4 fungiActivity 接线）
+- [x] M4-4 调度接线（步骤 8 疾病 SIR：密度依赖+环境因子+六边形传播邻域；疾病死亡步骤 9 直接移除+尸体→有机质；PopulationState.recoveredState；seedPopulations 初始感染选项）
+- [x] M4-5 测试（population.test.ts 增 D1/真菌单元；新增 sim/test/disease.test.ts 系统验收）+ 演示场景 `data/scenarios/disease_outbreak.json`
+- [x] M4-6 记录（Q11、任务卡、公式索引 D1、schema/README）
+
+**M4 验收（契约 §16，`npm test` 114 项：113 通过 / 0 失败 / 1 跳过 M7）**：
+1. **高密度更易传播 ✓**：高密度兔群（250/cell > 阈值 100）病毒爆发（I 峰 >0.1），低密度（30/cell）消退（R0<1）；单元级 R0>1 感染升 / R0<1 感染降；
+2. **疾病死亡降低种群 ✓**（感染群 vs 无感染对照终态数量更少）；SIR 比例守恒每 tick 校验；
+3. **分解真菌加速养分循环 ✓**：真菌生长 + 有机质周转更快（系统）；E5 分解通量随 fungiActivity 线性加速（单元）；
+4. **重放 ✓**：含疾病/真菌 50 tick 逐字节一致；双缓冲不改输入；M0–M3 回归全过。
+
+**测试设计记录**：真菌"净营养"对比初版失败——暖湿世界土壤水 200 → 淋失主导营养变化掩盖分解信号，且真菌同化（immobilization）与矿化竞争。改测**有机质周转**（无歧义）+ E5 活性→分解通量单元测试，干净证明加速分解。
+
+**下一步：M5（H1–H3 智人聚落）**——验收：聚落受食物与疾病约束。待决：Q1/Q2、Q5/Q7、Q8、Q9/Q10/Q11。

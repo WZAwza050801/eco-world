@@ -3,6 +3,7 @@
 > 来源：契约 §4–§7。本文件是索引，公式正文以 `00-design-contract.md` 为准。
 > 遗传（M3，契约无公式编号）：`packages/core/src/biology/population.ts` 的 `traitSelectionDelta`（Lande h²σ²β/世代天数）与 `traitMutationDelta`；性状→适生范围映射 `TRAIT_RANGE_MAP`（fitness.ts）。见问题单 Q10。
 > 六边形网格（v2.2/Q6，契约无公式编号）：`packages/core/src/grid/hex.ts` 的 `offsetToCube`/`cubeToOffset`/`hexNeighbors`/`hexDistance`/`hexCenter`/`hexLonLat`/`fitPlaneGradient`（坡度/坡向最小二乘）。E1–E6/B1–B8 公式拓扑无关，六边形下零改动。见 docs/05。
+> 分解真菌（M4/Q11，契约无公式编号）：`packages/core/src/soil/nutrients.ts` 的 `stepFungus`（saprotroph 生长/同化/呼吸/死亡）与 `fungiActivityFromBiomass`（驱动 E5 分解乘子）。见问题单 Q11。
 
 | 编号 | 名称 | 实现文件 | 函数 | 里程碑 |
 |---|---|---|---|---|
@@ -21,7 +22,7 @@
 | B7 | 竞争 | packages/core/src/biology/competition.ts | effectiveResource | M2 ✅ |
 | B8 | 适合度 | packages/core/src/biology/fitness.ts | fitness（冻结）、rangeSuitability、fitnessStressModifier、habitatFitness、effectiveEnvironment | M3 ✅ |
 | B9 | 迁徙与扩散 | packages/core/src/biology/dispersal.ts | dispersalFlow、movementPressure、suitabilityGradient、targetAccessibility、migrationCapacity、establishment、migrationCost | M3 ✅ |
-| D1 | SIR 疾病 | packages/core/src/disease/sir.ts | - | M4 |
+| D1 | SIR 疾病 | packages/core/src/disease/sir.ts | stepSIR、densityFactor、environmentalFactor | M4 ✅ |
 | H1 | 食物需求 | packages/core/src/humanity/food.ts | - | M5 |
 | H2 | 聚落增长 | packages/core/src/humanity/settlement.ts | - | M5 |
 | H3 | 土地利用反馈 | packages/core/src/humanity/landUse.ts | - | M5 |
