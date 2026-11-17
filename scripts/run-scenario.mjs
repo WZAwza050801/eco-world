@@ -14,9 +14,10 @@
  * 输出：JSON lines 时间序列（每 every tick 一行：全局各物种总 count/biomass + 分区）。
  * 重放语义：每 tick 从快照 randomState 恢复随机流（契约 §10.5）。
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { generateWorld, seedPopulations } from '../dist/sim/src/scenario.js';
 import { stepWorld } from '../dist/sim/src/scheduler.js';
+import { serializeWorldSnapshot } from '../dist/sim/src/snapshot.js';
 import { RandomStream } from '../dist/core/src/random/RandomStream.js';
 
 const args = process.argv.slice(2);
@@ -29,6 +30,11 @@ const argOf = (name, dflt) => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] !== undefined ? Number(args[i + 1]) : dflt;
 };
+const argStr = (name, dflt) => {
+  const i = args.indexOf(name);
+  return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : dflt;
+};
+const savePath = argStr('--save', null);
 
 const sc = JSON.parse(readFileSync(file, 'utf8'));
 const ticks = argOf('--ticks', sc.ticks ?? 365);
@@ -85,4 +91,8 @@ for (let t = 1; t <= ticks; t++) {
   if (t % every === 0 || t === ticks) {
     console.log(snapshotLine(world, t));
   }
+}
+if (savePath) {
+  writeFileSync(savePath, serializeWorldSnapshot(world));
+  console.error(`存档已保存（快照+随机流，供 replay.mjs 重放）: ${savePath}`);
 }

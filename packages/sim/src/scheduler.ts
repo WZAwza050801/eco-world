@@ -12,7 +12,7 @@
  * 新状态（与 M1 stepEnvironment 内部链一致），最后统一 commit 为新快照。
  * §8.3 随机：所有噪声/微观随机取自 rng 的稳定 fork，按固定顺序消费，重放一致。
  */
-import type { Cell, PopulationState, SpeciesDefinition, PathogenDefinition, WorldSnapshot } from '../../core/src/types.js';
+import type { Cell, PopulationState, SpeciesDefinition, PathogenDefinition, HistoricalEvent, WorldSnapshot } from '../../core/src/types.js';
 import type { RandomStream } from '../../core/src/random/RandomStream.js';
 import { BIOLOGY, WORLD } from '../../core/src/constants.js';
 import { solarInput } from '../../core/src/climate/solar.js';
@@ -38,6 +38,7 @@ import {
 import { foodNeed, foodModifier as humanFoodModifier } from '../../core/src/humanity/food.js';
 import { settlementGrowth } from '../../core/src/humanity/settlement.js';
 import { landUseImpact } from '../../core/src/humanity/landUse.js';
+import { detectEvents, mergeEventHistory } from './events.js';
 import {
   grossPrimaryProduction,
   plantGrowth,
@@ -304,6 +305,13 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
   const populationPops = prev.populations.filter((p) => defOf(p)?.simulationTier === 'population');
   const animals = populationPops.filter((p) => !isHuman(defOf(p)));
   const humans = populationPops.filter((p) => isHuman(defOf(p)));
+  // M6 事件检测所需的物种分类集合
+  const fieldIds = new Set<string>();
+  const humanIds = new Set<string>();
+  for (const [id, d] of species) {
+    if (d.simulationTier === 'field') fieldIds.add(id);
+    if (isHuman(d)) humanIds.add(id);
+  }
   const animalsByCell = new Map<number, PopulationState[]>();
   for (const p of populationPops) {
     const i = idx(p.cellId.x, p.cellId.y);
@@ -487,6 +495,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
   // 疾病死亡（mortalityRate·I）于步骤 9 直接移除（与捕食移除一致，避免 B5 重复计死）。
   // 宿主跳转 hostJumpPotential 为 §8 稀有事件，归 M6 事件系统（Q11 注记）。
   const diseaseWork = new Map<string, { infState: Record<string, number>; recState: Record<string, number>; deathFraction: number }>();
+  const rareEvents: HistoricalEvent[] = []; // M6 宿主跳转等稀有事件
+  const hostJumpRng = rng.fork('core:disease:hostjump');
   for (const p of populationPops) {
     const def = defOf(p);
     if (!def || p.count <= 0) continue;
@@ -496,7 +506,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     const recState: Record<string, number> = { ...(p.recoveredState ?? {}) };
     let deathFraction = 0;
     for (const [pid, path] of pathogens) {
-      if (!path.hostSpecies.includes(p.speciesId)) continue;
+      // M6：宿主范围 OR 已感染（宿主跳转后的新宿主感染可继续进展）
+      if (!path.hostSpecies.includes(p.speciesId) && (infState[pid] ?? 0) <= 0) continue;
       const I = clamp01(infState[pid] ?? 0);
       const R = clamp01(recState[pid] ?? 0);
       const S = clamp01(1 - I - R);
@@ -523,6 +534,37 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
       deathFraction += sir.deaths;
     }
     diseaseWork.set(key, { infState, recState, deathFraction: clamp01(deathFraction) });
+  }
+
+  // 宿主跳转（§6 hostJumpPotential，§8 稀有事件，M6）：病原以极小概率从已感染宿主溢出至同格新宿主，
+  // _seed_ 感染 I=0.02（后续 SIR 因「已感染」条件继续进展）；记录 host_jump 事件。
+  for (const [pid, path] of pathogens) {
+    if (path.hostJumpPotential <= 0) continue;
+    for (const p of populationPops) {
+      if (p.count <= 0 || path.hostSpecies.includes(p.speciesId)) continue;
+      if ((p.infectionState?.[pid] ?? 0) > 0) continue;
+      const i = idx(p.cellId.x, p.cellId.y);
+      const source = (animalsByCell.get(i) ?? []).find(
+        (q) => path.hostSpecies.includes(q.speciesId) && (q.infectionState?.[pid] ?? 0) > 0,
+      );
+      if (!source) continue;
+      if (hostJumpRng.next() >= path.hostJumpPotential) continue;
+      const key = popKey(p);
+      const dw = diseaseWork.get(key) ?? { infState: { ...(p.infectionState ?? {}) }, recState: { ...(p.recoveredState ?? {}) }, deathFraction: 0 };
+      dw.infState[pid] = 0.02;
+      diseaseWork.set(key, dw);
+      rareEvents.push({
+        id: `${timeNext}:hostjump:${pid}:${key}`,
+        time: timeNext,
+        type: 'host_jump',
+        location: [{ x: p.cellId.x, y: p.cellId.y }],
+        participants: [p.speciesId, pid],
+        causes: [{ ref: `infection:${pid}:${popKey(source)}`, change: source.infectionState?.[pid] ?? 0, description: '宿主跳转（溢出传播）' }],
+        outcomes: [{ description: `${pid} 溢出至新宿主 ${p.speciesId}`, magnitude: 0.02 }],
+        severity: 0.5,
+        visibility: 'headline',
+      });
+    }
   }
 
   // ── 步骤 9：繁殖、死亡、遗传、迁徙（遗传/迁徙 M3；B4+B5） ──
@@ -703,6 +745,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     health: number;
     means: Record<string, number>;
     variances: Record<string, number>;
+    infState: Record<string, number>; // M6：迁徙携带感染
+    recState: Record<string, number>;
     isPlant: boolean;
   }
   const transfers: Transfer[] = [];
@@ -767,6 +811,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
         health: p.health,
         means: { ...p.traitMeans },
         variances: { ...p.traitVariance },
+        infState: { ...(p.infectionState ?? {}) },
+        recState: { ...(p.recoveredState ?? {}) },
         isPlant,
       });
     }
@@ -822,7 +868,8 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
         ageStructure: t.isPlant ? { juvenile: 0.2, adult: 0.7, old: 0.1 } : { ...MIGRANT_AGE },
         energyReserve: t.isPlant ? 0 : t.reserve,
         health: t.health,
-        infectionState: {},
+        infectionState: { ...t.infState }, // M6：迁徙携带感染（源种群感染状态随迁移传播）
+        recoveredState: { ...t.recState },
         traitMeans: { ...t.means },
         traitVariance: { ...t.variances },
       };
@@ -938,8 +985,18 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     }
   }
 
-  // ── 步骤 11：生成事件与因果记录（M6 占位，位置保留） ──
-  // TODO(M6): 截断/饥饿/灭绝/捕食崩溃/疾病爆发/聚落兴衰等事件与因果链（events.ts）
+  // ── 步骤 11：生成事件与因果记录（M6，§8.4 因果链；引用真实状态变化） ──
+  const nextSnapshot = createWorldSnapshot({
+    time: timeNext,
+    season: seasonNext,
+    cells,
+    populations: finalPops,
+    agents: prev.agents,
+    interactions: prev.interactions,
+    events: prev.events,
+    randomState: rng.serialize(),
+  });
+  const newEvents = [...detectEvents(prev, nextSnapshot, fieldIds, humanIds), ...rareEvents];
 
   // ── 步骤 12：统计、缓存、前端快照（按遗传/扩散后的最终状态重算） ──
   const plantBiomassFinal = new Map<string, number>();
@@ -981,7 +1038,7 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
     populations: finalPops,
     agents: prev.agents,
     interactions: prev.interactions,
-    events: prev.events,
+    events: mergeEventHistory(prev.events, newEvents),
     randomState: rng.serialize(),
   });
 }
