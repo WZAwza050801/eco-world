@@ -4,7 +4,7 @@
 
 | 术语 | 含义 |
 |---|---|
-| cell | 逻辑地理单元，默认 10 km 见方 |
+| cell | 六边形逻辑地理单元（v2.2），中心距 10 km、边长 ≈5.774 km、面积 ≈86.60 km²；odd-r offset 存储 |
 | tick | 一次生态更新，默认 1 天 |
 | kgC | 千克碳，生物量干重单位 |
 | GPP | 总初级生产力 |
@@ -14,4 +14,4 @@
 | 双缓冲 | 读旧写新、统一提交的更新方式 |
 | 因果链 | 事件的原因—结果记录 |
 
-量纲速查：时间 day（year = 365 day）；空间 cell（边长 10 km）；面积 km²（cell = 100 km²）；生物量 kgC；种群 individuals/cell；能量 kJ；温度 °C；降水 mm/day；水储量 mm；营养 kgN/cell；质量 kg；距离 km；密度 individuals/km²。
+量纲速查：时间 day（year = 365 day）；空间 cell（六边形中心距 10 km）；面积 km²（cell ≈ 86.60 km²）；生物量 kgC；种群 individuals/cell；能量 kJ；温度 °C；降水 mm/day；水储量 mm；营养 kgN/cell；质量 kg；距离 km；密度 individuals/km²。

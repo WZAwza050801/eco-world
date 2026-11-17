@@ -2,6 +2,7 @@
 
 > 来源：契约 §4–§7。本文件是索引，公式正文以 `00-design-contract.md` 为准。
 > 遗传（M3，契约无公式编号）：`packages/core/src/biology/population.ts` 的 `traitSelectionDelta`（Lande h²σ²β/世代天数）与 `traitMutationDelta`；性状→适生范围映射 `TRAIT_RANGE_MAP`（fitness.ts）。见问题单 Q10。
+> 六边形网格（v2.2/Q6，契约无公式编号）：`packages/core/src/grid/hex.ts` 的 `offsetToCube`/`cubeToOffset`/`hexNeighbors`/`hexDistance`/`hexCenter`/`hexLonLat`/`fitPlaneGradient`（坡度/坡向最小二乘）。E1–E6/B1–B8 公式拓扑无关，六边形下零改动。见 docs/05。
 
 | 编号 | 名称 | 实现文件 | 函数 | 里程碑 |
 |---|---|---|---|---|

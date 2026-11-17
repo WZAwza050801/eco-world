@@ -1,7 +1,15 @@
-# ECO WORLD 项目执行契约 v2.1
+# ECO WORLD 项目执行契约 v2.2
 
 > 本文档是 v1「总设计文档」的落地版本。v1 决定“做什么、为什么”，本文档决定“怎么做、按什么顺序做、谁来做、做完怎么验收”。
 > 本文档是**执行契约**：其中所有公式、单位、数据结构、更新顺序和文件树均为**冻结项**，后续 agent 不得自行修改；只能按 §17 的任务模板补数据、补函数体、补测试。
+
+> **v2.2 变更记录（2026-11-16，项目 owner 批准架构变更提案 docs/05-hex-grid-proposal.md，Q6）**：
+> - **方形网格 → 六边形蜂窝网格**（文明式）。§1.2 几何：中心距 d=10km（`CELL_EDGE_KM` 语义改为中心距）、边长 d/√3≈5.774km（新增 `CELL_HEX_SIDE_KM`）、面积 (√3/2)d²≈86.60km²（`CELL_AREA_KM2` 100→86.60）。
+> - §1.3 坐标协议：**odd-r offset 存储**（`Cell.id{x=col,y=row}`，W×H 矩形布局）+ **cube 坐标运算**；**6 邻域**为计算邻域；**纬度公式保留** `lat=90−180(row+0.5)/H`；边界墙保留。
+> - §3.1 `Cell.neighbors` 4 项→6 项（字段名/类型不变）；§13 新增 `grid/hex.ts`、`docs/05-hex-grid-proposal.md`。
+> - **公式层零改动**：E1–E6/B1–B8/§9.2 顺序/随机接口/快照/重放全部不变（拓扑无关）；E4 汇流、B9 扩散、海岸 BFS 为通用邻居图算法，自动适配 6 邻域。坡度/坡向改 6 邻居最小二乘平面拟合（scenario.ts）。
+> - 证据：定殖前沿各向异性支撑比 方形 √2=1.414（偏差 41%）→ 六边形 2/√3=1.155（15%），改造后实测 1.1547。M0–M3 验收在六边形上全部重新通过（103 测试 102 过 0 败）。
+> - Q9/Q10（M2/M3 非冻结接口/算法）仍待 v2.2 后续冻结，不在本次 hex 变更内。
 
 > **v2.1 变更记录（2026-11-16，项目 owner 批准）**：
 > - **Q4 解决**：§2 补充 E1–E5 引用的 6 个常量（`SOLAR_AMPLITUDE_DAY` / `SEASON_AMP` / `INFILTRATION_CAPACITY` / `EVAP_RATE` / `MAX_SURFACE_WATER` / `MAX_NUTRIENTS`），冻结；新增 `HYDROLOGY` / `SOIL` 常量组。
@@ -58,8 +66,8 @@
 | 量 | 单位 | 说明 |
 |---|---|---|
 | 时间 | day（天） | 最小生态 tick；year = 365 day |
-| 空间 | cell | 逻辑单元；默认边长 10 km |
-| 面积 | km² | cell.area = 100 |
+| 空间 | cell | 六边形逻辑单元（v2.2）；中心距 d = 10 km，边长 d/√3 ≈ 5.774 km |
+| 面积 | km² | cell.area = (√3/2)d² ≈ 86.60（v2.2，原方形 100） |
 | 生物量 | kgC | 千克碳/干重，与 v1 “biomass”一致 |
 | 种群数量 | individuals / cell | 动物、人 |
 | 植物量 | kgC / cell | 植物用生物量，不用株数 |
@@ -72,13 +80,15 @@
 | 距离 | km | 移动、扩散 |
 | 密度 | individuals / km² | 展示层换算 |
 
-### 1.3 坐标协议（冻结）
+### 1.3 坐标协议（冻结，v2.2 六边形）
 
-- 逻辑层：方形网格，`x ∈ [0, W)`, `y ∈ [0, H)`，默认 `W = H = 128`。
-- 邻居：4 邻域（上右下左）为**计算邻域**；8 邻域仅用于扩散的展示平滑。
-- 环面还是边界墙：默认**边界墙**（世界边缘不可跨越），避免物种“从东边绕回西边”造成假迁徙。
-- `latitude` 用 `y` 归一化：`lat = 90 - 180 * (y + 0.5) / H`，范围 `[-90, 90]`。
-- 所有字段名与 §3 完全一致，禁止别名。
+- 逻辑层：**六边形蜂窝网格**（pointy-top），**odd-r offset 存储**：`Cell.id {x=col, y=row}`，`col ∈ [0, W)`, `row ∈ [0, H)`，默认 `W = H = 128`，矩形布局（奇数行右移半格）。
+- 运算坐标：**cube 坐标** (cx,cy,cz)，cx+cy+cz=0。offset→cube：`cx = col − (row − (row&1))/2`，`cz = row`，`cy = −cx−cz`；cube→offset：`col = cx + (cz − (cz&1))/2`，`row = cz`。工具见 `grid/hex.ts`。
+- 邻居：**6 邻域**为计算邻域（cube 六方向 `[(+1,−1,0),(+1,0,−1),(0,+1,−1),(−1,+1,0),(−1,0,+1),(0,−1,+1)]` 转 offset）；格距 = `(|Δcx|+|Δcy|+|Δcz|)/2`。
+- cell 中心 Cartesian（km）：`px = d·(col + 0.5·(row&1))`（东向），`py = d·(√3/2)·row`（南向）；经度 `lon = 360·(col + 0.5·(row&1))/W − 180`。
+- 环面还是边界墙：默认**边界墙**（越界邻居过滤，不环回），避免假迁徙。
+- `latitude` 用 `row` 归一化（**公式保留**）：`lat = 90 - 180 * (row + 0.5) / H`，范围 `[-90, 90]`。
+- 所有字段名与 §3 完全一致，禁止别名（`id{x,y}` 语义为 offset col,row）。
 
 ---
 
@@ -86,10 +96,11 @@
 
 ```ts
 export const WORLD = {
-  W: 128,                 // 列数
-  H: 128,                 // 行数
-  CELL_EDGE_KM: 10,       // 单元格边长
-  CELL_AREA_KM2: 100,
+  W: 128,                 // 列数（odd-r offset col）
+  H: 128,                 // 行数（odd-r offset row）
+  CELL_EDGE_KM: 10,       // 六边形中心距 spacing（v2.2：原方形边长语义改为中心距）
+  CELL_HEX_SIDE_KM: 10 / Math.sqrt(3), // 六边形边长 ≈ 5.7735 km（v2.2 新增）
+  CELL_AREA_KM2: (Math.sqrt(3) / 2) * 100, // 六边形面积 ≈ 86.60 km²（v2.2：原 100）
   DAYS_PER_YEAR: 365,
   SEASON_LENGTH_DAYS: 91, // 约一季度
   TICKS_PER_DAY: 1,       // 生态 tick
@@ -147,7 +158,7 @@ interface Cell {
   landWaterFraction: number;      // 0..1, 0=全陆地 1=全水
   coastDistance: number;          // km
   latitude: number;               // deg
-  neighbors: CellId[];            // 4 邻域
+  neighbors: CellId[];            // 6 邻域（v2.2 六边形，odd-r offset）
 
   // 动态环境场
   temperature: number;            // °C
@@ -736,7 +747,8 @@ eco-world/
 │  ├─ 01-formulas.md               # 公式索引（编号↔文件↔函数）
 │  ├─ 02-data-schema.md            # 类型定义与字段说明
 │  ├─ 03-agent-tasks.md            # 任务卡仓库
-│  └─ 04-glossary.md               # 术语与量纲
+│  ├─ 04-glossary.md               # 术语与量纲
+│  └─ 05-hex-grid-proposal.md      # 六边形架构变更提案（v2.2/Q6，已批准）
 ├─ packages/
 │  ├─ core/                        # 纯逻辑，无 I/O，无渲染，可单测
 │  │  ├─ src/
@@ -748,6 +760,7 @@ eco-world/
 │  │  │  │  └─ index.ts
 │  │  │  ├─ grid/
 │  │  │  │  ├─ index.ts
+│  │  │  │  ├─ hex.ts              # 六边形 offset↔cube/邻居/格距/中心/平面拟合（v2.2）
 │  │  │  │  └─ flowDirection.ts    # E4 流向缓存
 │  │  │  ├─ climate/
 │  │  │  │  ├─ solar.ts            # E1
@@ -910,6 +923,8 @@ export function fitness(base: number, suitabilities: number[]): number {
 /** E4: 一次性计算每个 cell 的下游邻居；返回 -1 表示汇 */
 export function computeFlowDirection(cells: Cell[]): Int32Array {}
 ```
+
+> 签名冻结、**拓扑无关**：在 `cell.neighbors` 列表上取最陡下降，v2.2 六边形 6 邻域自动适配（无需改签名）。六边形坐标工具见 `grid/hex.ts`（offset↔cube、`hexNeighbors`、`hexDistance`、`hexCenter`、`fitPlaneGradient`）。
 
 ### 14.7 调度器（sim/src/scheduler.ts）
 
