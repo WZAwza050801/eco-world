@@ -1,1 +1,72 @@
-{}
+{
+  "id": "homo_sapiens",
+  "taxonomy": {
+    "domain": "Eukaryota",
+    "kingdom": "Animalia",
+    "phylum": "Chordata",
+    "className": "Mammalia",
+    "order": "Primates",
+    "family": "Hominidae",
+    "genus": "Homo",
+    "speciesName": "sapiens",
+    "fictional": false
+  },
+  "roles": {
+    "producer": 0,
+    "herbivore": 0.3,
+    "carnivore": 0.3,
+    "omnivore": 0.8,
+    "decomposer": 0,
+    "pollinator": 0,
+    "parasite": 0,
+    "pathogen": 0,
+    "ecosystemEngineer": 1.0
+  },
+  "physiology": {
+    "bodyMass": 60,
+    "maturityAge": 15,
+    "maximumAge": 70,
+    "rStrategyScore": 0.1,
+    "reserveMaxDays": 30
+  },
+  "environment": {
+    "temperature": { "min": -20, "max": 45 },
+    "water": { "min": 10, "max": 300 },
+    "biomes": ["grassland", "temperate_forest", "tropical_forest", "seasonal_forest", "wetland", "tundra"]
+  },
+  "resources": {
+    "foodSources": ["grass_c3", "rabbit", "deer"],
+    "minimumDailyEnergy": 10000,
+    "energyDensity": 7000,
+    "conversionEfficiency": 0.5
+  },
+  "lifeHistory": {
+    "reproductionType": "sexual",
+    "offspringPerEvent": { "min": 1, "max": 2 },
+    "reproductiveIntervalYears": 3,
+    "juvenileSurvival": 0.6
+  },
+  "movement": {
+    "dispersalMethod": "walking",
+    "speedKmPerDay": 5,
+    "pattern": "territorial"
+  },
+  "interactions": {
+    "preysOn": ["grass_c3", "rabbit", "deer"],
+    "preyedOnBy": [],
+    "competitionCoefficients": {}
+  },
+  "genetics": {
+    "heritableTraits": ["culturalComplexity"],
+    "mutationRate": 0.001
+  },
+  "disease": {
+    "susceptibility": { "virus_rabbit": 0.5 }
+  },
+  "ecosystemEffects": {
+    "soilFixation": 0,
+    "erosionReduction": 0,
+    "flammability": 0
+  },
+  "simulationTier": "population"
+}

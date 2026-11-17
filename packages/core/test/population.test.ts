@@ -61,6 +61,9 @@ import {
   fungiActivityFromBiomass,
   FUNGUS_MAX_ACTIVITY,
 } from '../src/soil/nutrients.js';
+import { foodNeed, foodModifier } from '../src/humanity/food.js';
+import { settlementGrowth } from '../src/humanity/settlement.js';
+import { landUseImpact } from '../src/humanity/landUse.js';
 import type { Cell, SpeciesDefinition } from '../src/types.js';
 import { BIOLOGY, WORLD } from '../src/constants.js';
 import { RandomStream } from '../src/random/RandomStream.js';
@@ -397,4 +400,52 @@ test('真菌: 温湿+有机质充足时生长并同化有机质；无有机质/�
   assert.ok(cold.biomass < 50, '低温应衰减');
   const dry = stepFungus({ biomass: 50, organicMatter: 1000, temperature: 25, soilMoisture: 0 });
   assert.ok(dry.biomass < 50, '干燥应衰减');
+});
+
+// ───────────────────────── M5：H1/H2/H3 智人聚落 ─────────────────────────
+
+test('H1: foodNeed = population·perCapitaFood·ageFactor·activityFactor；foodModifier = 摄入/需求 clamp01', () => {
+  closeTo(foodNeed(100, 10000), 1e6);
+  closeTo(foodNeed(100, 10000, 0.8, 1.2), 1e6 * 0.8 * 1.2);
+  closeTo(foodNeed(-5, 10000), 0);
+  closeTo(foodModifier(800000, 1e6), 0.8);
+  closeTo(foodModifier(2e6, 1e6), 1); // 充足 → 1
+  closeTo(foodModifier(0, 1e6), 0); // 短缺 → 0
+  closeTo(foodModifier(100, 0), 1); // 无需求 → 中性
+});
+
+test('H2: 聚落增长冻结公式；食物约束（foodMod 低 → 出生少）；非负；增长恒等式', () => {
+  const base = { population: 100, adults: 70, fertility: 0.01, foodModifier: 1, healthModifier: 1, culturalModifier: 1, baselineMortality: 0.001 };
+  const fed = settlementGrowth(base);
+  closeTo(fed.births, 70 * 0.01);
+  closeTo(fed.deaths, 100 * 0.001);
+  closeTo(fed.growth, fed.births - fed.deaths);
+  closeTo(fed.population, Math.max(0, 100 + fed.growth));
+  const starved = settlementGrowth({ ...base, foodModifier: 0 });
+  closeTo(starved.births, 0); // 食物短缺 → 无出生
+  assert.ok(starved.population < fed.population, '食物约束应降低聚落增长');
+  const sick = settlementGrowth({ ...base, healthModifier: 0.2 });
+  assert.ok(sick.births < fed.births, '疾病（健康修饰低）应降低出生');
+  const extinct = settlementGrowth({ ...base, population: 1, baselineMortality: 10 });
+  assert.ok(extinct.population >= 0);
+});
+
+test('H2: 移民项 settlementGrowth = births − deaths + immigration − emigration', () => {
+  const r = settlementGrowth({ population: 100, adults: 70, fertility: 0.01, foodModifier: 1, healthModifier: 1, culturalModifier: 1, baselineMortality: 0.001, immigration: 5, emigration: 2 });
+  closeTo(r.netMigration, 3);
+  closeTo(r.growth, r.births - r.deaths + 3);
+});
+
+test('H3: 土地利用强度 = 农业+放牧+footprint（clamp01）；效应随强度缩放；零强度零效应', () => {
+  const zero = landUseImpact({ agricultureIntensity: 0, grazingIntensity: 0, settlementFootprint: 0 });
+  closeTo(zero.impact, 0);
+  closeTo(zero.plantBiomassLossFraction, 0);
+  closeTo(zero.diseasePressureDelta, 0);
+  const hi = landUseImpact({ agricultureIntensity: 0.5, grazingIntensity: 0.3, settlementFootprint: 0.4 });
+  closeTo(hi.impact, 1); // 1.2 clamp 到 1
+  const lo = landUseImpact({ agricultureIntensity: 0.2, grazingIntensity: 0, settlementFootprint: 0 });
+  assert.ok(hi.plantBiomassLossFraction > lo.plantBiomassLossFraction);
+  assert.ok(hi.diseasePressureDelta > lo.diseasePressureDelta);
+  assert.ok(hi.soilMoistureDelta < 0, '土地利用使土壤变干');
+  assert.ok(hi.erosionNutrientLoss > 0, '侵蚀流失营养');
 });

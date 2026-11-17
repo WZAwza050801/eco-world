@@ -1,6 +1,6 @@
 {
   "id": "virus_rabbit",
-  "hostSpecies": ["rabbit"],
+  "hostSpecies": ["rabbit", "homo_sapiens"],
   "transmissionMode": "contact",
   "transmissionRate": 0.8,
   "recoveryRate": 0.1,

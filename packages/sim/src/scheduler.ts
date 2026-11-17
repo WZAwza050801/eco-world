@@ -35,6 +35,9 @@ import {
   environmentalFactor as pathogenEnvironmentalFactor,
   NEIGHBOR_EXPOSURE_WEIGHT,
 } from '../../core/src/disease/sir.js';
+import { foodNeed, foodModifier as humanFoodModifier } from '../../core/src/humanity/food.js';
+import { settlementGrowth } from '../../core/src/humanity/settlement.js';
+import { landUseImpact } from '../../core/src/humanity/landUse.js';
 import {
   grossPrimaryProduction,
   plantGrowth,
@@ -147,6 +150,19 @@ const FOOD_SAT_KGC = 500;
 const PREY_SAT_IND = 50;
 /** 迁徙者年龄结构（成年偏置，@non-frozen） */
 const MIGRANT_AGE = { juvenile: 0.1, adult: 0.8, old: 0.1 };
+
+// ───────────────── @non-frozen M5 实现常量（Q12，M8 可调） ─────────────────
+
+/** 人类植物性食物比例（其余来自动物猎物） */
+const HUMAN_PLANT_DIET_FRACTION = 0.7;
+/** 人类每 tick 可收割植物生物量比例（农业） */
+const HUMAN_AGRI_HARVEST_FRACTION = 0.1;
+/** 人类每 tick 可猎取猎物比例（狩猎） */
+const HUMAN_HUNT_FRACTION = 0.05;
+/** 农业强度参考人口（ind/cell，达此值强度 1） */
+const HUMAN_AGRI_REF_POP = 200;
+/** 聚落 footprint 参考人口（ind/cell） */
+const HUMAN_FOOTPRINT_REF_POP = 500;
 
 // ───────────────── 流向缓存（契约 E4：不逐 tick 重算） ─────────────────
 
@@ -282,10 +298,14 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
   for (const c of cells) c.productivity = 0;
 
   const defOf = (p: PopulationState): SpeciesDefinition | undefined => species.get(p.speciesId);
+  // M5：智人（taxonomy.genus==='Homo'）与动物分流——动物走 B4/B5/B6，人类走 H1/H2/H3（步骤 10）
+  const isHuman = (d: SpeciesDefinition | undefined): boolean => d?.taxonomy?.genus === 'Homo';
   const plants = prev.populations.filter((p) => defOf(p)?.simulationTier === 'field');
-  const animals = prev.populations.filter((p) => defOf(p)?.simulationTier === 'population');
+  const populationPops = prev.populations.filter((p) => defOf(p)?.simulationTier === 'population');
+  const animals = populationPops.filter((p) => !isHuman(defOf(p)));
+  const humans = populationPops.filter((p) => isHuman(defOf(p)));
   const animalsByCell = new Map<number, PopulationState[]>();
-  for (const p of animals) {
+  for (const p of populationPops) {
     const i = idx(p.cellId.x, p.cellId.y);
     const list = animalsByCell.get(i) ?? [];
     list.push(p);
@@ -467,7 +487,7 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
   // 疾病死亡（mortalityRate·I）于步骤 9 直接移除（与捕食移除一致，避免 B5 重复计死）。
   // 宿主跳转 hostJumpPotential 为 §8 稀有事件，归 M6 事件系统（Q11 注记）。
   const diseaseWork = new Map<string, { infState: Record<string, number>; recState: Record<string, number>; deathFraction: number }>();
-  for (const p of animals) {
+  for (const p of populationPops) {
     const def = defOf(p);
     if (!def || p.count <= 0) continue;
     const key = popKey(p);
@@ -813,9 +833,113 @@ export function stepWorld(prev: WorldSnapshot, rng: RandomStream): WorldSnapshot
   // 局部灭绝清理（动物 count ≤ 0 移除；植物保留 0 生物量作再生基础，M2 约定）
   finalPops = finalPops.filter((p) => defOf(p)?.simulationTier === 'field' || p.count > 0);
 
-  // ── 步骤 10：人类聚落与土地利用（M5 占位，位置保留） ──
+  // ── 步骤 10：人类聚落与土地利用（H1/H2/H3，M5） ──
+  // 食物获取（农业收割植物 + 狩猎猎物）→ H1 需求/食物修饰 → H2 增长（疾病死亡先移除）→ H3 土地利用反馈。
+  // 人类定居（M5 不扩散）；文化修饰暂 1（技术成本 v1 §6.5 归 M6+，Q12）。
+  const plantBiomassByCell = new Map<number, number>();
+  const preyCountByCell = new Map<number, number>();
+  for (const p of finalPops) {
+    const d = defOf(p);
+    const i = idx(p.cellId.x, p.cellId.y);
+    if (d?.simulationTier === 'field' && d.roles.decomposer < 0.5) {
+      plantBiomassByCell.set(i, (plantBiomassByCell.get(i) ?? 0) + p.biomass);
+    } else if (d?.simulationTier === 'population' && !isHuman(d)) {
+      preyCountByCell.set(i, (preyCountByCell.get(i) ?? 0) + p.count);
+    }
+  }
+  for (const p of humans) {
+    const def = defOf(p);
+    if (!def || p.count <= 0) continue;
+    const key = popKey(p);
+    const i = idx(p.cellId.x, p.cellId.y);
+    const c = cells[i] as Cell;
+    const dw = diseaseWork.get(key);
+    const deathFraction = dw?.deathFraction ?? 0;
+    const infState = dw?.infState ?? p.infectionState ?? {};
+    const infected = clamp01(Object.values(infState).reduce((s, v) => s + v, 0));
+
+    // H1 食物需求与获取（农业 + 狩猎）
+    const need = foodNeed(p.count, def.resources.minimumDailyEnergy);
+    const plantE = DEFAULT_PLANT_ENERGY_DENSITY;
+    const preyE = 1.5 * DEFAULT_ANIMAL_ENERGY_DENSITY; // 猎物平均体重近似（@non-frozen Q12）
+    const availPlant = plantBiomassByCell.get(i) ?? 0;
+    const availPrey = preyCountByCell.get(i) ?? 0;
+    const plantHarvest = Math.min(availPlant * HUMAN_AGRI_HARVEST_FRACTION, (need * HUMAN_PLANT_DIET_FRACTION) / plantE);
+    const preyHarvest = Math.min(availPrey * HUMAN_HUNT_FRACTION, (need * (1 - HUMAN_PLANT_DIET_FRACTION)) / preyE);
+    const intake = plantHarvest * plantE + preyHarvest * preyE;
+    const foodMod = humanFoodModifier(intake, need);
+
+    // H3 土地利用强度与效应
+    const lu = landUseImpact({
+      agricultureIntensity: clamp01(p.count / HUMAN_AGRI_REF_POP),
+      grazingIntensity: 0,
+      settlementFootprint: clamp01(p.count / HUMAN_FOOTPRINT_REF_POP),
+    });
+    c.diseasePressure = clamp01(c.diseasePressure + lu.diseasePressureDelta);
+    c.pollution = clamp01(c.pollution + lu.pollutionDelta);
+    c.soilMoisture = Math.max(0, c.soilMoisture + lu.soilMoistureDelta);
+    c.nutrients = Math.max(0, c.nutrients - lu.erosionNutrientLoss);
+
+    // 收割/狩猎 + H3  clearing：从 finalPops 按比例扣减植物生物量与猎物数量
+    const plantRemove = plantHarvest + availPlant * lu.plantBiomassLossFraction;
+    for (const q of finalPops) {
+      const qd = defOf(q);
+      if (idx(q.cellId.x, q.cellId.y) !== i) continue;
+      if (qd?.simulationTier === 'field' && qd.roles.decomposer < 0.5 && availPlant > 0) {
+        q.biomass = Math.max(0, q.biomass - plantRemove * (q.biomass / availPlant));
+      } else if (qd?.simulationTier === 'population' && !isHuman(qd) && availPrey > 0) {
+        q.count = Math.max(0, q.count - preyHarvest * (q.count / availPrey));
+        q.biomass = q.count * (qd?.physiology.bodyMass ?? 0) * CARBON_FRACTION;
+      }
+    }
+
+    // H2 聚落增长（疾病死亡先移除，与动物一致）
+    const base = p.count * (1 - deathFraction);
+    const diseaseDeaths = p.count * deathFraction;
+    const lh = def.lifeHistory;
+    const fertility =
+      (((lh.offspringPerEvent.min + lh.offspringPerEvent.max) / 2) * lh.juvenileSurvival) /
+      (Math.max(1e-6, lh.reproductiveIntervalYears) * WORLD.DAYS_PER_YEAR);
+    const baselineMortality = 1 / (Math.max(1e-6, def.physiology.maximumAge) * WORLD.DAYS_PER_YEAR);
+    const sg = settlementGrowth({
+      population: base,
+      adults: base * p.ageStructure.adult,
+      fertility,
+      foodModifier: foodMod,
+      healthModifier: clamp01(1 - infected),
+      culturalModifier: 1,
+      baselineMortality,
+    });
+
+    // 年龄结构轻量更新（与动物一致）
+    const maturation = 1 / (Math.max(1e-6, def.physiology.maturityAge) * WORLD.DAYS_PER_YEAR);
+    const aging = 1 / (Math.max(1e-6, def.physiology.maximumAge - def.physiology.maturityAge) * WORLD.DAYS_PER_YEAR);
+    const j0 = base * p.ageStructure.juvenile;
+    const a0 = base * p.ageStructure.adult;
+    const o0 = base * p.ageStructure.old;
+    const j = Math.max(0, j0 - maturation * j0 - sg.deaths * p.ageStructure.juvenile + sg.births);
+    const a = Math.max(0, a0 + maturation * j0 - aging * a0 - sg.deaths * p.ageStructure.adult);
+    const o = Math.max(0, o0 + aging * a0 - sg.deaths * p.ageStructure.old);
+    const sum = j + a + o;
+    const ageStructure = sum > 0 ? { juvenile: j / sum, adult: a / sum, old: o / sum } : { juvenile: 0.2, adult: 0.7, old: 0.1 };
+
+    // 尸体 → 有机质
+    c.organicMatter += (diseaseDeaths + sg.deaths) * def.physiology.bodyMass * CARBON_FRACTION * DETRITUS_FRACTION;
+
+    if (sg.population > 0) {
+      finalPops.push({
+        ...p,
+        count: sg.population,
+        biomass: sg.population * def.physiology.bodyMass * CARBON_FRACTION,
+        ageStructure,
+        infectionState: infState,
+        recoveredState: dw?.recState ?? p.recoveredState ?? {},
+      });
+    }
+  }
+
   // ── 步骤 11：生成事件与因果记录（M6 占位，位置保留） ──
-  // TODO(M6): 截断/饥饿/灭绝/捕食崩溃等事件与因果链（events.ts）
+  // TODO(M6): 截断/饥饿/灭绝/捕食崩溃/疾病爆发/聚落兴衰等事件与因果链（events.ts）
 
   // ── 步骤 12：统计、缓存、前端快照（按遗传/扩散后的最终状态重算） ──
   const plantBiomassFinal = new Map<string, number>();

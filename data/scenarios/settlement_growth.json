@@ -1,0 +1,22 @@
+{
+  "meta": {
+    "name": "智人聚落增长与土地利用（M5 演示场景）",
+    "contract": "docs/00-design-contract.md §7 H1–H3 / §16 M5 验收：聚落受食物与疾病约束",
+    "note": "均质暖湿平原（lat 0），草 2000 + 兔 100 + 人 100/cell。观察：聚落因食物增长、狩猎压低兔群、农业收割+土地利用压低草生物量并抬升疾病压力。把草/兔去掉则聚落衰减（食物约束）；给人 infectionState virus_rabbit 则疾病约束。与 sim/test/settlement.test.ts 同构。"
+  },
+  "seed": 20261116,
+  "width": 6,
+  "height": 6,
+  "ticks": 365,
+  "overrides": {
+    "latitude": 0, "elevation": 50, "slope": 0, "aspect": 0,
+    "terrainType": "plain", "landWaterFraction": 0, "coastDistance": 0,
+    "salinity": 0.1, "soilMoisture": 200, "nutrients": 300, "organicMatter": 500,
+    "surfaceWater": 0, "groundwater": 0, "accessibility": 1
+  },
+  "populations": [
+    { "speciesId": "grass_c3", "biomass": 2000, "all": true },
+    { "speciesId": "rabbit", "count": 100, "all": true },
+    { "speciesId": "homo_sapiens", "count": 100, "all": true }
+  ]
+}
