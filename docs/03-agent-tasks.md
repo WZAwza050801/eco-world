@@ -65,6 +65,18 @@
 - **最小修改建议**：契约 v2.2 冻结上述可选字段与推导公式（或给出替代定义）；§14.2/§14.3 骨架同步增补。
 - **决策人**：项目 owner（用户）；不阻塞 M3+（扩展均向后兼容）。
 
+### Q10（M3 · 算法/语义未指定 · 非阻塞 · 已按非冻结实现）
+- **位置与处理**（B8/B9/遗传的契约未冻结细节，全部 `@non-frozen` 标注）：
+  1. **B8 宽容函数**形状未指定 → 高斯软衰减 `exp(−(d/softWidth)²)`（尾部梯度非零，边际生境中自然选择可作用）；硬致死边际由 preferred 范围导出（温度 ±15°C / 水分 ±100mm），超出 → suitability 0 + `hardConstraint` 标记（契约 B8 的 hard_constraint 要求）；
+  2. **硬致死接线**：B5 climate 修正项超硬界 → `HARD_LETHAL_MULT=200`（M2 的软上限 6 为占位，M3 升级；M2 气候单测期望值随之更新——这是实现契约 B8 硬致死要求，非降验收）；climate 胁迫含温度+水分（取 max）；
+  3. **B9 各因子**算法未指定 → 压力 = 探索基线 0.02 + 密度超拐点 0.7 推挤 + 适合度赤字；梯度 = max(0, f_j−f_i) + **空适生目标竞争释放加成 0.3**（否则等适生空域永远无法定殖）；通行性 = 物种方式 × cell.accessibility（步行/种子/孢子/人为辅助不跨海洋，飞行/风媒可）；能力 = speed/10km；随机因子对数正态 σ0.3；单 tick 外迁帽 0.5；
+  4. **定殖与成本**（§18.1 迁徙有边界和成本）：定殖量 = flow × 目标**绝对**生境适合度（硬致死 0 → 不定殖）；迁徙成本 2 kJ/(kg·km)×10km 从迁徙者储备扣减；定殖失败 = 死亡 → 有机质；最小定殖阈值 0.01 ind / 0.01 kgC（防僵尸种群）；
+  5. **B8 全适合度接线**：环境×食物×氧气驱动迁移压力；疾病/竞争/捕食修正暂 1（M4+ 接线）；梯度/定殖用**生境适合度（仅环境）**——空 cell 无食物，若用全适合度则先驱者永远无法定殖（鸡生蛋问题）；
+  6. **遗传**契约无公式编号（仅 §9.1 尺度、§3.3 traitMeans/Variance、§3.2 GeneticsProfile）→ Lande 方程 Δmean = h²σ²β/世代天数，世代天数 = reproductiveIntervalYears×365（内容驱动：兔 ~36 天演化快，草/狼 ~365 天符合 decade 尺度）；β 为性状→生境适合度数值梯度（±0.5 差分）；`TRAIT_RANGE_MAP`：coldTolerance/heatTolerance/droughtTolerance/waterloggingTolerance 每 +1 均值外扩对应环境边界 1 单位；中性性状仅突变漂变；方差保持（简化）；均值界 ±30；基因流随迁徙按数量加权混合；
+  7. **植物种子扩散**（B9 seed 模板）：每 tick 分配生物量 2% 为种子库，定殖再乘 0.5；0 生物量植物种群保留作再生基础（M2 约定）。
+- **最小修改建议**：契约 v2.2 与 Q9 合并冻结（宽容函数形状/硬边际、B9 因子定义、遗传模型与性状语义、定殖/成本规则）。
+- **决策人**：项目 owner（用户）；不阻塞 M4+。
+
 ## 任务卡（M0 已完成）
 
 - [x] M0-1 实现 `packages/core/src/types.ts`（§3 + §8.4）
@@ -115,3 +127,24 @@
 **整定记录（全部可改项/@non-frozen，M8 复调）**：狼→兔 a 0.008→0.014、h 0.05→0.3；兔→草 K 300→100；采食上限系数 3→2.2、日采食比例 0.6→0.35；饥饿指数 6→3（上限 400→20）；狼 juvenileSurvival 0.5→0.7（§15.3 parentalCare 高）、reserveMaxDays 25；领域干扰系数 0.5。整定路径：狼先灭绝→兔草崩溃→引入领域干扰+温和饥饿→持续振荡→狼生活史整定→4000 tick 稳定极限环。
 
 **下一步：M3（B8 适合度、B9 迁徙扩散、遗传性状）**——验收：物种只在适生区定居。待决问题单：Q1/Q2（类型冻结）、Q5/Q7（v2.1 追认）、Q8（E2 气候形状）、Q9（v2.2 接口冻结）。
+
+## 任务卡（M3 已完成 2026-11-16）
+
+- [x] M3-1 B8 适合度（`biology/fitness.ts`：冻结 `fitness()` 未动；`rangeSuitability` 高斯软衰减+硬致死标记、`fitnessStressModifier`、`habitatFitness`、`effectiveEnvironment`/`TRAIT_RANGE_MAP` 性状→适生范围耦合；Q10）
+- [x] M3-2 B9 迁徙扩散（`biology/dispersal.ts`：`dispersalFlow` 冻结公式结构+边界 flow≤源；`movementPressure`/`suitabilityGradient`（空适生格竞争释放加成）/`targetAccessibility`（步行/种子不跨海）/`migrationCapacity`/`establishment`/`migrationCost`/`dispersalRandomFactor`；Q10）
+- [x] M3-3 遗传性状（`biology/population.ts`：`traitSelectionDelta`（Lande h²σ²β/世代天数）+ `traitMutationDelta`；世代时间由 lifeHistory 内容驱动；方差保持简化；Q10）
+- [x] M3-4 调度接线（`scheduler.stepWorld` 步骤 9 续：遗传→迁徙两阶段流量（先算后应用，基因流加权混合）；B5 climate 升级温度+水分+硬致死；性状平移适生范围参与存活；步骤 12 按扩散后终态重算 CC；`seedPopulations` 性状初始化 mean 0/var 1）
+- [x] M3-5 内容调整（可改项：草种子扩散 speed 0.5→2 km/day；兔/狼 heritableTraits += coldTolerance）
+- [x] M3-6 场景工具（`run-scenario.mjs` 增 regions 分区覆盖 / where 分区投放 / report 分区报告；`data/scenarios/settlement_front.json` 定殖前沿演示：8×8，海洋屏障+冷区+空适生格）
+- [x] M3-7 测试（`population.test.ts` 增 B8/B9/遗传单元节 + M2 气候单测升级硬致死语义；新增 `sim/test/dispersal.test.ts` 系统验收）
+
+**M3 验收（契约 §16，`npm test` 100 项：99 通过 / 0 失败 / 1 跳过（M7 占位））**：
+1. **物种只在适生区定居 ✓**：冷区（lat 75，冬季硬致死）兔 600→<1、草 >99% 崩溃；适生区草/兔/狼持续存活（730 tick 演示）；
+2. **空适生格定殖 ✓**：初始无兔的适生格被 B9 扩散定殖（≥1 ind；演示区兔 960→2820 含定殖增量）；
+3. **迁徙有边界和成本 ✓**：海洋列零种群；拓扑隔离右侧 730 tick 始终为空；flow≤源种群；迁徙能量成本扣储备；定殖失败计死亡；
+4. **遗传 ✓**：边际冷世界 200 tick coldTolerance 定向上升 >0.008（Lande），中性性状 bodyMass 仅漂变 |·|<0.001，方差保持，基因流混合；
+5. **重放 ✓**：含扩散/遗传 80 tick 逐字节一致；双缓冲不改输入；M2 振荡验收回归通过。
+
+**测试设计记录**：初版夹具把冷区动物投在右侧，它们按 B9 梯度**合法逃逸**到右侧适生区定殖（正确行为）导致隔离断言失败——修正为冷区投放仅在左侧、右侧完全无源，隔离断言无歧义。此现象本身即"物种只在适生区定居"的佐证（不适生→向适生迁移）。
+
+**下一步：M4（D1 疾病 + 真菌）**——验收：高密度更易传播。待决问题单：Q1/Q2（类型冻结）、Q5/Q7（v2.1 追认）、Q8（E2 气候形状）、Q9/Q10（v2.2 接口/算法冻结）。
