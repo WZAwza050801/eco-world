@@ -4,6 +4,7 @@
 > 遗传（M3，契约无公式编号）：`packages/core/src/biology/population.ts` 的 `traitSelectionDelta`（Lande h²σ²β/世代天数）与 `traitMutationDelta`；性状→适生范围映射 `TRAIT_RANGE_MAP`（fitness.ts）。见问题单 Q10。
 > 六边形网格（v2.2/Q6，契约无公式编号）：`packages/core/src/grid/hex.ts` 的 `offsetToCube`/`cubeToOffset`/`hexNeighbors`/`hexDistance`/`hexCenter`/`hexLonLat`/`fitPlaneGradient`（坡度/坡向最小二乘）。E1–E6/B1–B8 公式拓扑无关，六边形下零改动。见 docs/05。
 > 分解真菌（M4/Q11，契约无公式编号）：`packages/core/src/soil/nutrients.ts` 的 `stepFungus`（saprotroph 生长/同化/呼吸/死亡）与 `fungiActivityFromBiomass`（驱动 E5 分解乘子）。见问题单 Q11。
+> 事件因果/重放（M6/Q13，契约 §8.4 冻结 HistoricalEvent 结构、§10.5 冻结存档重放）：`packages/sim/src/events.ts` 的 `detectEvents`/`buildCauses`/`mergeEventHistory`/`whyQuery`；`scripts/replay.mjs`（逐 tick 确定性验证）、`run-scenario.mjs --save`。事件类型/阈值/历史容量为 @non-frozen。见问题单 Q13。
 
 | 编号 | 名称 | 实现文件 | 函数 | 里程碑 |
 |---|---|---|---|---|

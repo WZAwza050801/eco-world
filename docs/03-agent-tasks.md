@@ -104,6 +104,18 @@
 - **最小修改建议**：契约 v2.3 与 Q11 合并冻结 H1 因子/H2 死亡式/H3 系数/人类食物获取模型/人类判别约定。
 - **决策人**：项目 owner（用户）；不阻塞 M6+。
 
+### Q13（M6 · 事件/存档语义未指定 · 非阻塞 · 已按非冻结实现）
+- **位置与处理**（契约仅冻结 HistoricalEvent 结构 §8.4 与「存档=快照+随机流，逐 tick 重放」§10.5；其余 `@non-frozen`）：
+  1. **事件类型/阈值/visibility 分级**未指定 → population_crash（相对降≥30%）/boom（≥50%）/extinction/disease_outbreak（感染上穿 10%）/climate_extreme（|T|>60）/settlement_*（人类）/host_jump；severity=相对变化幅度，visibility 按幅度分 headline/discoverable；每 tick 事件上限 50（防刷屏）；
+  2. **因果归因**（§8.4 冻结要求 causes 引用真实状态量变化）：buildCauses 从 prev/next 可观测状态推导——感染比例变化（infection:pid:species:cell）、温度变化（temperature:cell）、生产力变化（productivity:cell）；ref 为字符串引用、change 为数值；
+  3. **事件历史**：累积 + 上限 MAX_EVENT_HISTORY=500（确定性 slice）；snapshot.events 携带历史；whyQuery（§11.4）按 severity 降序返回实体相关事件；
+  4. **事件 id 确定性**：`time:type:entity:cell`，保证重放一致；detectEvents 纯函数（prev,next,fieldIds,humanIds）；
+  5. **宿主跳转收口**（Q11 遗留）：步骤 8 以 hostJumpPotential 概率从已感染宿主溢出至同格新宿主（seed I=0.02），SIR 条件改「宿主范围 OR 已感染」使新宿主感染可进展；记录 host_jump 事件；
+  6. **迁徙携带感染收口**（Q11 遗留）：扩散 Transfer 携带源 infState/recState，新建种群继承感染（疾病随迁徙传播）；
+  7. **存档/重放**：存档=serializeWorldSnapshot（含 randomState）；replay.mjs 从存档独立双重重放逐 tick 比对序列化（确定性 PASS/FAIL）；run-scenario.mjs --save 产存档。
+- **最小修改建议**：契约 v2.3 冻结事件类型枚举/阈值/历史容量/因果 ref 命名规范。
+- **决策人**：项目 owner（用户）；不阻塞 M7+。
+
 ## 任务卡（M0 已完成）
 
 - [x] M0-1 实现 `packages/core/src/types.ts`（§3 + §8.4）
@@ -228,3 +240,21 @@
 4. **重放 ✓**：含人类/疾病 50 tick 逐字节一致；双缓冲不改输入；M0–M4 回归全过。
 
 **下一步：M6（事件因果、快照存档、重放）**——验收：同种子重放逐 tick 一致（replay.mjs）；事件因果链（events.ts，含宿主跳转/迁徙携带感染等 M4/M5 遗留稀有事件）。待决：Q1/Q2、Q5/Q7、Q8、Q9/Q10/Q11/Q12。
+
+## 任务卡（M6 已完成 2026-11-16）
+
+- [x] M6-1 事件因果（`sim/src/events.ts`：`detectEvents` 纯函数检测崩溃/暴增/灭绝/疾病爆发/气候极端/聚落兴衰，`buildCauses` 引用真实状态量变化；`mergeEventHistory` 累积上限 500；`whyQuery` §11.4 按 severity 排序；确定性 id；Q13）
+- [x] M6-2 调度接线（步骤 11 事件生成接入 stepWorld；事件历史随快照提交）
+- [x] M6-3 稀有事件收口（宿主跳转：步骤 8 hostJumpPotential 溢出 + SIR「宿主 OR 已感染」条件 + host_jump 事件；迁徙携带感染：扩散 Transfer 携带 infState/recState）
+- [x] M6-4 存档/重放（`scripts/replay.mjs` 独立双重重放逐 tick 比对；`run-scenario.mjs --save` 产存档；snapshot 序列化/反序列化 M0 已有）
+- [x] M6-5 测试（新增 sim/test/events.test.ts：事件检测/因果 ref/历史 cap/whyQuery/存档 round-trip/重放确定性/疾病事件/迁徙携带感染）
+- [x] M6-6 记录（Q13、任务卡、公式索引注记、schema/README）
+
+**M6 验收（契约 §16，`npm test` 128 项：127 通过 / 0 失败 / 1 跳过 M7）**：
+1. **同种子重放逐 tick 一致 ✓**：存档 round-trip（序列化→反序列化→stepWorld 与直接一致）+ 独立双重重放 50 tick 逐字节一致；replay.mjs 实测 determinism PASS；
+2. **事件因果链 ✓**：detectEvents 检测崩溃/暴增/灭绝/疾病爆发，causes 引用真实状态量（infection/temperature/productivity ref + 数值 change）；疾病爆发场景实测累积 36 事件；
+3. **事件历史/查询 ✓**：累积上限 500；whyQuery 按 severity 降序；
+4. **稀有事件收口 ✓**：宿主跳转（host_jump 事件 + 新宿主感染进展）、迁徙携带感染（感染随扩散传播至新种群）；
+5. M0–M5 回归全过。**stepWorld 已接通 §9.2 全部 12 步**。
+
+**下一步：M7（前端图层、详情、时间线）**——验收：玩家能看懂"为什么"（ui/*，只读快照渲染 + 脏格增量 + whyQuery 因果展示）。**注意：M7 是产品体验层，涉及交互/视觉设计决策，开工前应先与 owner 跑设计讨论（方向≠设计批准），不直接套工程 spec。** 待决：Q1/Q2、Q5/Q7、Q8、Q9–Q13。
