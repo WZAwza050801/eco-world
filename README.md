@@ -3,16 +3,17 @@
 按冻结设计契约 `docs/00-design-contract.md`（v2.2）开发的生态沙盒模拟引擎。
 **本仓库的一切类型字段、公式编号、更新顺序、随机接口、目录结构以契约为准，开发者/agent 无权修改冻结项。**
 
-当前进度：**M0（基础类型与随机数）、M1（地形 + 气候水文）、M2（植物-草食-捕食闭环垂直切片）、M3（适合度/迁徙扩散/遗传性状）、M4（疾病 + 真菌）已完成**——
+当前进度：**M0（基础类型与随机数）、M1（地形 + 气候水文）、M2（植物-草食-捕食闭环垂直切片）、M3（适合度/迁徙扩散/遗传性状）、M4（疾病 + 真菌）、M5（智人聚落）已完成**——
 - 地形：**真实地球海陆数据**（Natural Earth 50m → `data/earth/land-mask-128x128.json`，陆地占比 31.9%，与地球实际 29% 一致）+ Perlin fBm 海拔细节（同 seed 逐 cell 可复现），随机生成大陆留给未来版本；
 - 气候水文：**E1–E6 全部实现**（太阳辐射/温度/降水含雨影/水量平衡含流向缓存与质量守恒汇流/土壤营养/群系查表），场景气候平均态初始化（`scenario.initializeClimate`）与 §9.2 步骤 2–4（`scheduler.stepEnvironment`）已接线；
-- 生态闭环：**B1–B7 全部实现**（光合/呼吸/生长/出生/死亡/Holling II 捕食/竞争），草-兔-狼内容按 §15 填写，`stepWorld` 接通 §9.2 步骤 1–9/12（10/11 保序占位待 M5/M6）；**草-兔-狼相位延迟振荡验收通过**（1500 tick 系统测试 + 4000 tick 长跑三物种持续共存）；
+- 生态闭环：**B1–B7 全部实现**（光合/呼吸/生长/出生/死亡/Holling II 捕食/竞争），草-兔-狼内容按 §15 填写，`stepWorld` 接通 §9.2 步骤 1–10/12（11 事件因果保序占位待 M6）；**草-兔-狼相位延迟振荡验收通过**（1500 tick 系统测试 + 4000 tick 长跑三物种持续共存）；
 - 空间与演化：**B8 适合度**（高斯宽容函数 + 硬致死 hard_constraint）、**B9 迁徙扩散**（压力×梯度×通行性×能力×随机；空适生格定殖、海洋屏障、迁徙成本）、**遗传性状**（Lande 方程，世代时间内容驱动，基因流随迁徙混合）；**"物种只在适生区定居"验收通过**（冷区清除/定殖前沿/隔离边界/定向演化，见 `data/scenarios/settlement_front.json` 演示）；
 - **六边形蜂窝地图（v2.2/Q6，文明式）**：方形 4 邻域 → 六边形 6 邻域（odd-r offset 存储 + cube 运算，纬度公式保留）；定殖前沿各向异性从 √2≈1.414（偏差 41%）降到 2/√3≈1.155（15%），实测 1.1547。**公式层零改动**（拓扑无关），M0–M3 验收在六边形上全部重新通过、动力学零复调；坡度/坡向改 6 邻居最小二乘平面拟合。提案与论证见 `docs/05-hex-grid-proposal.md`；
 - **疾病与真菌（M4）**：**D1 SIR**（密度依赖传播——密度阈值即流行 tipping point，环境因子×六边形传播邻域，S+I+R 守恒）+ **分解真菌**（saprotroph 同化有机质、驱动 E5 分解加速养分循环）；**"高密度更易传播"验收通过**（高密度爆发/低密度消退，见 `data/scenarios/disease_outbreak.json` 演示）；
-- 契约 **v2.2**（2026-11-16 owner 批准）：v2.1 冻结 Q4 六常量；v2.2 六边形架构变更（Q6 关闭）。M2/M3/M4 接口与算法不对称按 Q3 先例以非冻结扩展实现（问题单 Q9/Q10/Q11，待后续冻结）。
+- **智人聚落（M5）**：**H1 食物需求**（农业收割+狩猎，食物修饰限制增长）、**H2 聚落增长**（出生−死亡+移民，受食物/疾病/健康约束）、**H3 土地利用反馈**（降低植物生物量、增加疾病压力/侵蚀/污染）；人畜共患（virus_rabbit 感染人类）；**"聚落受食物与疾病约束"验收通过**（见 `data/scenarios/settlement_growth.json` 演示）；
+- 契约 **v2.2**（2026-11-16 owner 批准）：v2.1 冻结 Q4 六常量；v2.2 六边形架构变更（Q6 关闭）。M2–M5 接口与算法不对称按 Q3 先例以非冻结扩展实现（问题单 Q9/Q10/Q11/Q12，待后续冻结）。
 
-见 `packages/sim/src/scenario.ts`、`packages/sim/src/scheduler.ts` 与 `packages/core/src/climate|hydrology|soil|grid|biology|disease`（`grid/hex.ts` 为六边形工具）。里程碑路线见契约 §16，**下一步 M5（H1–H3 智人聚落）**。
+见 `packages/sim/src/scenario.ts`、`packages/sim/src/scheduler.ts` 与 `packages/core/src/climate|hydrology|soil|grid|biology|disease|humanity`（`grid/hex.ts` 为六边形工具）。里程碑路线见契约 §16，**下一步 M6（事件因果、快照存档、重放）**。
 
 ## 技术栈
 
@@ -96,6 +97,17 @@ npm test
 复现：`npm test`；观察爆发：`node scripts/run-scenario.mjs data/scenarios/disease_outbreak.json --ticks 60 --every 15`。
 测试位置：`packages/core/test/population.test.ts`（D1/真菌节）、`packages/sim/test/disease.test.ts`。
 类型与算法细节见问题单 Q11（docs/03-agent-tasks.md）。
+
+## M5 验收标准（契约 §16，全部通过；`npm test` 122 项：121 通过 / 0 失败 / 1 跳过）
+
+1. **聚落受食物约束**：有食物（草+猎物）聚落增长，无食物衰减（H1 foodModifier 限制 H2 出生）；
+2. **聚落受疾病约束**：感染聚落（人畜共患 virus_rabbit）数量低于无感染对照（D1 SIR 死亡 + 健康修饰降出生）；
+3. **土地利用反馈（H3）**：聚落降低局部植物生物量（农业收割+clearing）、增加疾病压力/侵蚀/污染；
+4. **重放一致**：含人类/疾病逐字节一致；双缓冲；M0–M4 回归通过。
+
+复现：`npm test`；观察聚落：`node scripts/run-scenario.mjs data/scenarios/settlement_growth.json --ticks 365 --every 60`。
+测试位置：`packages/core/test/population.test.ts`（H1/H2/H3 节）、`packages/sim/test/settlement.test.ts`。
+算法与语义细节见问题单 Q12（docs/03-agent-tasks.md）。
 
 ## 仓库结构
 

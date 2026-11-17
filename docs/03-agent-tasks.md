@@ -92,6 +92,18 @@
 - **最小修改建议**：契约 v2.3 冻结 PathogenDefinition、recoveredState、D1 离散式与密度/环境因子、真菌模型。
 - **决策人**：项目 owner（用户）；不阻塞 M5+。
 
+### Q12（M5 · 算法未指定/语义 · 非阻塞 · 已按非冻结实现）
+- **位置与处理**（全部 `@non-frozen` 标注）：
+  1. **H1 因子缺省**：ageStructureFactor/activityFactor 契约未给值 → 缺省 1；`foodModifier`=摄入/需求 clamp01（食物约束核心）；
+  2. **H2 死亡式**未指定 → population·baselineMortality（1/(maximumAge·365)）；疾病死亡由 D1 SIR（步骤 8）直接移除（与动物一致，H2 不重复计死）；immigration/emigration 缺省 0（M5 定居，迁徙 M6+）；culturalModifier 暂 1（技术成本 v1 §6.5 归 M6+）；
+  3. **H3 效应系数**未指定 → 植物损失 0.05/土壤水 −2mm/疾病压力 +0.02/侵蚀营养 −0.05kgN/污染 +0.01（每 tick·单位强度）；Cell 无 erosion 字段 → 侵蚀以营养流失+pollution 表征；强度由聚落规模驱动（农业 ref 200、footprint ref 500 ind/cell）；
+  4. **人类食物获取**（H1 摄入侧，契约未指定）：农业收割植物（每 tick ≤10% 生物量，满足 70% 膳食）+ 狩猎猎物（≤5%，满足 30% 膳食），按食谱比例与资源可得量取小；收割/狩猎从各种群按比例扣减；
+  5. **人类判别与分流**：`taxonomy.genus==='Homo'` 判别智人，与动物分流——动物走 B4/B5/B6（步骤 7/9），人类走 H1/H2/H3（步骤 10）；人类参与 D1 SIR（步骤 8，人畜共患）；人类 M5 定居不扩散；
+  6. **人畜共患**：virus_rabbit hostSpecies 扩展含 homo_sapiens（§12.1 Virus→Human 支持，内容可改项）；
+  7. **homo_sapiens 内容**：§15 无人类实例 → 按 §7/§12.1 推导填写（omnivore、perCapitaFood 10000 kJ/人·day、K 策略低生育、genus Homo）。
+- **最小修改建议**：契约 v2.3 与 Q11 合并冻结 H1 因子/H2 死亡式/H3 系数/人类食物获取模型/人类判别约定。
+- **决策人**：项目 owner（用户）；不阻塞 M6+。
+
 ## 任务卡（M0 已完成）
 
 - [x] M0-1 实现 `packages/core/src/types.ts`（§3 + §8.4）
@@ -198,3 +210,21 @@
 **测试设计记录**：真菌"净营养"对比初版失败——暖湿世界土壤水 200 → 淋失主导营养变化掩盖分解信号，且真菌同化（immobilization）与矿化竞争。改测**有机质周转**（无歧义）+ E5 活性→分解通量单元测试，干净证明加速分解。
 
 **下一步：M5（H1–H3 智人聚落）**——验收：聚落受食物与疾病约束。待决：Q1/Q2、Q5/Q7、Q8、Q9/Q10/Q11。
+
+## 任务卡（M5 已完成 2026-11-16）
+
+- [x] M5-1 H1 食物需求（`humanity/food.ts`：`foodNeed` 冻结公式 + `foodModifier` 摄入/需求 clamp01；Q12）
+- [x] M5-2 H2 聚落增长（`humanity/settlement.ts`：`settlementGrowth` 冻结公式 births−deaths+immigration−emigration；食物/健康/文化修饰；Q12）
+- [x] M5-3 H3 土地利用（`humanity/landUse.ts`：`landUseImpact` 强度→植物损失/土壤水/疾病压力/侵蚀/污染；Q12）
+- [x] M5-4 智人内容（`homo_sapiens.json`：omnivore、genus Homo、perCapitaFood 10000、K 策略；virus_rabbit 宿主扩展含人类，人畜共患）
+- [x] M5-5 调度接线（步骤 10 人类：H1 食物获取（农业+狩猎）→H2 增长（疾病死亡先移除）→H3 土地利用反馈；genus Homo 与动物分流；人类参与步骤 8 SIR；步骤 12 CC 含人类）
+- [x] M5-6 测试（population.test.ts 增 H1/H2/H3 单元；新增 sim/test/settlement.test.ts 系统验收）+ 演示场景 `data/scenarios/settlement_growth.json`
+- [x] M5-7 记录（Q12、任务卡、公式索引 H1–H3、schema/README）
+
+**M5 验收（契约 §16，`npm test` 122 项：121 通过 / 0 失败 / 1 跳过 M7）**：
+1. **聚落受食物约束 ✓**：有食物（草+猎物）聚落增长，无食物衰减（H1 foodModifier 限制 H2 出生）；
+2. **聚落受疾病约束 ✓**：感染聚落（人畜共患 virus_rabbit）数量低于无感染对照（D1 SIR 死亡 + 健康修饰降出生）；
+3. **土地利用反馈 ✓**：聚落降低局部植物生物量（收割+clearing）、增加疾病压力（H3）；
+4. **重放 ✓**：含人类/疾病 50 tick 逐字节一致；双缓冲不改输入；M0–M4 回归全过。
+
+**下一步：M6（事件因果、快照存档、重放）**——验收：同种子重放逐 tick 一致（replay.mjs）；事件因果链（events.ts，含宿主跳转/迁徙携带感染等 M4/M5 遗留稀有事件）。待决：Q1/Q2、Q5/Q7、Q8、Q9/Q10/Q11/Q12。

@@ -23,6 +23,6 @@
 | B8 | 适合度 | packages/core/src/biology/fitness.ts | fitness（冻结）、rangeSuitability、fitnessStressModifier、habitatFitness、effectiveEnvironment | M3 ✅ |
 | B9 | 迁徙与扩散 | packages/core/src/biology/dispersal.ts | dispersalFlow、movementPressure、suitabilityGradient、targetAccessibility、migrationCapacity、establishment、migrationCost | M3 ✅ |
 | D1 | SIR 疾病 | packages/core/src/disease/sir.ts | stepSIR、densityFactor、environmentalFactor | M4 ✅ |
-| H1 | 食物需求 | packages/core/src/humanity/food.ts | - | M5 |
-| H2 | 聚落增长 | packages/core/src/humanity/settlement.ts | - | M5 |
-| H3 | 土地利用反馈 | packages/core/src/humanity/landUse.ts | - | M5 |
+| H1 | 食物需求 | packages/core/src/humanity/food.ts | foodNeed、foodModifier | M5 ✅ |
+| H2 | 聚落增长 | packages/core/src/humanity/settlement.ts | settlementGrowth | M5 ✅ |
+| H3 | 土地利用反馈 | packages/core/src/humanity/landUse.ts | landUseImpact | M5 ✅ |
